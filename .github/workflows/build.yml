@@ -1,0 +1,44 @@
+name: Build iOS App
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install XcodeGen
+      run: brew install xcodegen
+
+    - name: Generate Xcode Project
+      run: xcodegen generate
+
+    - name: Build App (Unsigned)
+      run: |
+        xcodebuild clean build \
+          -project Whogram.xcodeproj \
+          -scheme Whogram \
+          -configuration Release \
+          -sdk iphoneos \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO \
+          CONFIGURATION_BUILD_DIR=${{ github.workspace }}/build
+
+    - name: Package to IPA
+      run: |
+        mkdir -p Payload
+        mv ${{ github.workspace }}/build/Whogram.app Payload/
+        zip -r Whogram.ipa Payload
+
+    - name: Upload IPA Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Whogram-IPA
+        path: Whogram.ipa
