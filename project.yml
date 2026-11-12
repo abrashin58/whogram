@@ -1,6 +1,10 @@
 name: Whogram
 options:
   bundleIdPrefix: com.abrashin
+packages:
+  TDLibKit:
+    url: https://github.com/Swiftgram/TDLibKit.git
+    from: 1.8.31
 targets:
   Whogram:
     type: application
@@ -8,6 +12,8 @@ targets:
     deploymentTarget: "16.0"
     sources: 
       - Sources
+    dependencies:
+      - package: TDLibKit
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
