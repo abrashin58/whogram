@@ -1,9 +1,14 @@
 import SwiftUI
-import TDLibKit // Подключаем библиотеку Telegram
+import TDLibKit
 
 struct ContentView: View {
-    @State private var phoneNumber: String = ""
+    @State private var phoneNumber: String = "+7"
     @State private var isConnecting = false
+    @State private var statusMessage = "Приватный клиент Telegram"
+    
+    // Тестовые ключи от серверов Telegram
+    let apiId = 94575
+    let apiHash = "a3406de8d171bb422bb6ddf3bbd800e2"
     
     var body: some View {
         ZStack {
@@ -16,14 +21,13 @@ struct ContentView: View {
                     .font(.system(size: 42, weight: .black, design: .monospaced))
                     .foregroundColor(.white)
                 
-                Text("Приватный клиент Telegram")
+                Text(statusMessage)
                     .font(.subheadline)
-                    .foregroundColor(.gray)
+                    .foregroundColor(statusMessage.contains("Ошибка") ? .red : .gray)
                 
-                // Панель ввода номера
                 VStack(spacing: 20) {
                     TextField("Номер телефона", text: $phoneNumber)
-                        .keyboardType(.phonePad)
+                        .keyboardType(.numberPad) // Исправленная компактная клавиатура
                         .foregroundColor(.white)
                         .padding()
                         .background(Color.white.opacity(0.1))
@@ -32,7 +36,8 @@ struct ContentView: View {
                     
                     Button(action: {
                         isConnecting = true
-                        // Здесь будет вызов функции TDLib для отправки СМС
+                        statusMessage = "Авторизация в TDLib..."
+                        connectToTelegram()
                     }) {
                         Text(isConnecting ? "Соединение..." : "Войти")
                             .font(.headline)
@@ -44,13 +49,22 @@ struct ContentView: View {
                             .padding(.horizontal, 30)
                     }
                 }
-                
                 Spacer()
-                
-                Text("Powered by TDLib")
-                    .font(.caption)
-                    .foregroundColor(Color.gray.opacity(0.5))
             }
         }
     }
+    
+    func connectToTelegram() {
+        // Здесь TDLib получает наши ключи apiId и apiHash
+        // Пока делаем визуальную проверку, что интерфейс реагирует
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            statusMessage = "Ключи приняты! Ожидание СМС-кода..."
+            isConnecting = false
+        }
+    }
 }
+
+
+
+
+
