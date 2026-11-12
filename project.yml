@@ -4,7 +4,7 @@ options:
 packages:
   TDLibKit:
     url: https://github.com/Swiftgram/TDLibKit.git
-    from: 1.8.31
+    branch: main
 targets:
   Whogram:
     type: application
