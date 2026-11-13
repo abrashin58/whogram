@@ -1,14 +1,81 @@
 import SwiftUI
 import TDLibKit
 
-struct ContentView: View {
-    @State private var phoneNumber: String = "+7"
-    @State private var isConnecting = false
-    @State private var statusMessage = "Приватный клиент Telegram"
+class TelegramAuth: ObservableObject {
+    private var client: TdClient!
     
-    // Тестовые ключи от серверов Telegram
-    let apiId = 94575
-    let apiHash = "a3406de8d171bb422bb6ddf3bbd800e2"
+    @Published var statusMessage = "Подключение к серверам..."
+    @Published var showCodeField = false
+    
+    init() {
+        client = TdClientImpl(completionQueue: .main)
+        
+        // Слушаем реальные ответы от Telegram
+        client.run { [weak self] data in
+            if let response = String(data: data, encoding: .utf8) {
+                DispatchQueue.main.async {
+                    if response.contains("authorizationStateWaitTdlibParameters") {
+                        self?.sendParameters()
+                    } else if response.contains("authorizationStateWaitPhoneNumber") {
+                        self?.statusMessage = "Приватный клиент Telegram"
+                    } else if response.contains("authorizationStateWaitCode") {
+                        self?.statusMessage = "СМС отправлено! Введите код."
+                        self?.showCodeField = true
+                    } else if response.contains("authorizationStateReady") {
+                        self?.statusMessage = "Успешный вход в аккаунт!"
+                    }
+                }
+            }
+        }
+    }
+    
+    func send(json: String) {
+        if let data = json.data(using: .utf8) {
+            client.send(query: data)
+        }
+    }
+    
+    func sendParameters() {
+        // Отправляем тестовые ключи разработчика
+        let request = """
+        {
+          "@type": "setTdlibParameters",
+          "api_id": 94575,
+          "api_hash": "a3406de8d171bb422bb6ddf3bbd800e2",
+          "system_language_code": "ru",
+          "device_model": "iPhone 14 Pro",
+          "system_version": "iOS 16.0",
+          "application_version": "1.0",
+          "use_secret_chats": false,
+          "use_message_database": false,
+          "use_file_database": false,
+          "use_chat_info_database": false,
+          "use_test_dc": false,
+          "database_directory": "tdlib",
+          "files_directory": "tdlib_files",
+          "enable_storage_optimizer": true,
+          "ignore_file_names": false
+        }
+        """
+        send(json: request)
+    }
+    
+    func sendPhoneNumber(_ phone: String) {
+        statusMessage = "Запрос СМС от Telegram..."
+        let request = """
+        {
+          "@type": "setAuthenticationPhoneNumber",
+          "phone_number": "\(phone)"
+        }
+        """
+        send(json: request)
+    }
+}
+
+struct ContentView: View {
+    @StateObject private var auth = TelegramAuth()
+    @State private var phoneNumber: String = "+7"
+    @State private var code: String = ""
     
     var body: some View {
         ZStack {
@@ -21,50 +88,64 @@ struct ContentView: View {
                     .font(.system(size: 42, weight: .black, design: .monospaced))
                     .foregroundColor(.white)
                 
-                Text(statusMessage)
+                Text(auth.statusMessage)
                     .font(.subheadline)
-                    .foregroundColor(statusMessage.contains("Ошибка") ? .red : .gray)
+                    .foregroundColor(auth.statusMessage.contains("СМС") ? .green : .gray)
                 
                 VStack(spacing: 20) {
-                    TextField("Номер телефона", text: $phoneNumber)
-                        .keyboardType(.numberPad) // Исправленная компактная клавиатура
-                        .foregroundColor(.white)
-                        .padding()
-                        .background(Color.white.opacity(0.1))
-                        .cornerRadius(12)
-                        .padding(.horizontal, 30)
-                    
-                    Button(action: {
-                        isConnecting = true
-                        statusMessage = "Авторизация в TDLib..."
-                        connectToTelegram()
-                    }) {
-                        Text(isConnecting ? "Соединение..." : "Войти")
-                            .font(.headline)
-                            .foregroundColor(.black)
-                            .frame(maxWidth: .infinity)
+                    if !auth.showCodeField {
+                        // Экран ввода номера
+                        TextField("Номер телефона", text: $phoneNumber)
+                            .keyboardType(.phonePad)
+                            .foregroundColor(.white)
                             .padding()
-                            .background(Color(red: 50/255, green: 215/255, blue: 75/255))
+                            .background(Color.white.opacity(0.1))
                             .cornerRadius(12)
                             .padding(.horizontal, 30)
+                        
+                        Button(action: {
+                            auth.sendPhoneNumber(phoneNumber)
+                        }) {
+                            Text("Получить код")
+                                .font(.headline)
+                                .foregroundColor(.black)
+                                .frame(maxWidth: .infinity)
+                                .padding()
+client.run
+client.run
+
+
+.background(Color(red: 50/255, green: 215/255, blue: 75/255))
+                                .cornerRadius(12)
+                                .padding(.horizontal, 30)
+                        }
+                    } else {
+                        // Экран ввода кода из СМС
+                        TextField("Код из СМС", text: $code)
+                            .keyboardType(.numberPad)
+                            .foregroundColor(.white)
+                            .padding()
+                            .background(Color.white.opacity(0.1))
+                            .cornerRadius(12)
+                            .padding(.horizontal, 30)
+                        
+                        Button(action: {
+                            // Логику отправки кода добавим на следующем шаге
+                            auth.statusMessage = "Проверка кода..."
+                        }) {
+                            Text("Войти")
+                                .font(.headline)
+                                .foregroundColor(.black)
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(Color(red: 50/255, green: 215/255, blue: 75/255))
+                                .cornerRadius(12)
+                                .padding(.horizontal, 30)
+                        }
                     }
                 }
                 Spacer()
             }
         }
     }
-    
-    func connectToTelegram() {
-        // Здесь TDLib получает наши ключи apiId и apiHash
-        // Пока делаем визуальную проверку, что интерфейс реагирует
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            statusMessage = "Ключи приняты! Ожидание СМС-кода..."
-            isConnecting = false
-        }
-    }
 }
-
-
-
-
-
