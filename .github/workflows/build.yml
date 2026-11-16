@@ -15,7 +15,7 @@ steps:
   run: xcodegen generate
 
 - name: Build App (Unsigned)
-  run: 
+  run: |
     xcodebuild clean build \
       -project Whogram.xcodeproj \
       -scheme Whogram \
@@ -27,7 +27,7 @@ steps:
       CONFIGURATION_BUILD_DIR=$GITHUB_WORKSPACE/build
 
 - name: Package to IPA
-  run: 
+  run: |
     mkdir -p Payload
     cp -r $GITHUB_WORKSPACE/build/Whogram.app Payload/
     zip -r Whogram.ipa Payload
