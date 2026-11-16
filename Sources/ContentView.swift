@@ -55,20 +55,26 @@ final class TelegramAuth: ObservableObject {
         }
     }
 
-    // MARK: Отправка запросов
+// MARK: Отправка запросов
 
-    private func send(_ object: [String: Any]) {
-        guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(
-                withJSONObject: object,
-                options: []
-              ) else {
-            errorMessage = "Ошибка формирования запроса"
-            return
-        }
+private struct RawTdQuery: TdQuery {
+    let data: Data
+    func make(with encoder: JSONEncoder) throws -> Data { data }
+}
 
-      client.send(query: data)
+private func send(_ object: [String: Any]) {
+    guard JSONSerialization.isValidJSONObject(object),
+          let data = try? JSONSerialization.data(
+            withJSONObject: object,
+            options: []
+          ) else {
+        errorMessage = "Ошибка формирования запроса"
+        return
     }
+
+    try? client.send(query: RawTdQuery(data: data), completion: nil)
+}
+
 
     // MARK: Обработка TDLib
 
