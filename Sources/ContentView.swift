@@ -8,7 +8,7 @@ private let TELEGRAM_API_HASH = "a3406de8d171bb422bb6ddf3bbd800e2"
 
 // MARK: - МОДЕЛИ
 
-struct RealChat: Identifiable {
+struct RealChat: Identifiable, Equatable {
     let id: Int64
     var title: String
     var lastMessage: String
@@ -16,7 +16,7 @@ struct RealChat: Identifiable {
     var unreadCount: Int
 }
 
-struct RealMessage: Identifiable {
+struct RealMessage: Identifiable, Equatable {
     let id: Int64
     let text: String
     let date: Int
@@ -49,7 +49,9 @@ final class TelegramAuth: ObservableObject {
         client = TdClientImpl(completionQueue: .main)
 
         client.run { [weak self] data in
-            self?.handleResponse(data)
+            DispatchQueue.main.async {
+                self?.handleResponse(data)
+            }
         }
     }
 
@@ -65,7 +67,7 @@ final class TelegramAuth: ObservableObject {
             return
         }
 
-        client.send(query: data)
+        client.send(query: data, completion: nil)
     }
 
     // MARK: Обработка TDLib
@@ -81,8 +83,10 @@ final class TelegramAuth: ObservableObject {
         if type == "error" {
             let message = json["message"] as? String ?? "Ошибка TDLib"
             let code = json["code"] as? Int ?? 0
-            errorMessage = "\(code): \(message)"
-            statusMessage = message
+            if code != 400 {
+                errorMessage = "\(code): \(message)"
+                statusMessage = message
+            }
             isLoading = false
             return
         }
@@ -99,7 +103,7 @@ final class TelegramAuth: ObservableObject {
             }
 
         case "updateChatLastMessage":
-            if let id = json["chat_id"] as? Int64,
+            if let id = (json["chat_id"] as? NSNumber)?.int64Value,
                let index = chats.firstIndex(where: { $0.id == id }),
                let message = json["last_message"] as? [String: Any] {
                 chats[index].lastMessage = messageText(message)
@@ -107,21 +111,21 @@ final class TelegramAuth: ObservableObject {
             }
 
         case "updateChatUnreadCount":
-            if let id = json["chat_id"] as? Int64,
+            if let id = (json["chat_id"] as? NSNumber)?.int64Value,
                let index = chats.firstIndex(where: { $0.id == id }) {
                 chats[index].unreadCount =
-                    json["unread_count"] as? Int ?? 0
+                    (json["unread_count"] as? NSNumber)?.intValue ?? 0
             }
 
         case "updateChatReadInbox":
-            if let id = json["chat_id"] as? Int64,
+            if let id = (json["chat_id"] as? NSNumber)?.int64Value,
                let index = chats.firstIndex(where: { $0.id == id }) {
                 chats[index].unreadCount =
-                    json["unread_count"] as? Int ?? 0
+                    (json["unread_count"] as? NSNumber)?.intValue ?? 0
             }
 
         case "updateChatTitle":
-            if let id = json["chat_id"] as? Int64,
+            if let id = (json["chat_id"] as? NSNumber)?.int64Value,
                let title = json["title"] as? String,
                let index = chats.firstIndex(where: { $0.id == id }) {
                 chats[index].title = title
@@ -135,7 +139,7 @@ final class TelegramAuth: ObservableObject {
         case "messages":
             if let items = json["messages"] as? [[String: Any]],
                let firstMsg = items.first,
-               let chatID = firstMsg["chat_id"] as? Int64 {
+               let chatID = (firstMsg["chat_id"] as? NSNumber)?.int64Value {
                 let parsed = items.compactMap(parseMessage)
                 var current = messages[chatID] ?? []
                 for msg in parsed {
@@ -191,14 +195,6 @@ final class TelegramAuth: ObservableObject {
             statusMessage = "Подключено"
             loadChats()
 
-        case "authorizationStateWaitRegistration":
-            statusMessage = "Требуется регистрация аккаунта"
-            isLoading = false
-
-        case "authorizationStateWaitOtherDeviceConfirmation":
-            statusMessage = "Подтвердите вход на другом устройстве"
-            isLoading = false
-
         case "authorizationStateClosed":
             statusMessage = "Соединение закрыто"
             isLoading = false
@@ -209,16 +205,8 @@ final class TelegramAuth: ObservableObject {
     }
 
     private func sendParameters() {
-        guard TELEGRAM_API_ID > 0,
-              !TELEGRAM_API_HASH.contains("ВСТАВЬ") else {
-            statusMessage = "Укажите API ID и API HASH"
-            isLoading = false
-            errorMessage = "Не настроены Telegram API credentials"
-            return
-        }
-
         let base = FileManager.default.urls(
-            for: .applicationSupportDirectory,
+            for: .documentDirectory,
             in: .userDomainMask
         )[0]
 
@@ -249,7 +237,7 @@ final class TelegramAuth: ObservableObject {
             "use_test_dc": false,
             "system_language_code": "ru",
             "device_model": "iPhone 14 Pro",
-            "system_version": ProcessInfo.processInfo.operatingSystemVersionString,
+            "system_version": "iOS 16.0",
             "application_version": "1.0",
             "enable_storage_optimizer": true,
             "ignore_file_names": false
@@ -297,7 +285,7 @@ final class TelegramAuth: ObservableObject {
     }
 
     private func updateChat(_ chat: [String: Any]) {
-        guard let id = chat["id"] as? Int64,
+        guard let id = (chat["id"] as? NSNumber)?.int64Value,
               let title = chat["title"] as? String else {
             return
         }
@@ -309,7 +297,7 @@ final class TelegramAuth: ObservableObject {
             title: title,
             lastMessage: last.map { messageText($0) } ?? "Нет сообщений",
             time: last.map { messageTime($0) } ?? "",
-            unreadCount: chat["unread_count"] as? Int ?? 0
+            unreadCount: (chat["unread_count"] as? NSNumber)?.intValue ?? 0
         )
 
         if let index = chats.firstIndex(where: { $0.id == id }) {
@@ -349,20 +337,20 @@ final class TelegramAuth: ObservableObject {
     // MARK: Сообщения
 
     private func parseMessage(_ message: [String: Any]) -> RealMessage? {
-        guard let id = message["id"] as? Int64 else {
+        guard let id = (message["id"] as? NSNumber)?.int64Value else {
             return nil
         }
 
         return RealMessage(
             id: id,
             text: messageText(message),
-            date: message["date"] as? Int ?? 0,
-            isOutgoing: message["is_outgoing"] as? Bool ?? false
+            date: (message["date"] as? NSNumber)?.intValue ?? 0,
+            isOutgoing: (message["is_outgoing"] as? Bool) ?? false
         )
     }
 
     private func updateMessage(_ message: [String: Any]) {
-        guard let chatID = message["chat_id"] as? Int64,
+        guard let chatID = (message["chat_id"] as? NSNumber)?.int64Value,
               let item = parseMessage(message) else {
             return
         }
@@ -392,38 +380,29 @@ final class TelegramAuth: ObservableObject {
         case "messageText":
             let text = content["text"] as? [String: Any]
             return text?["text"] as? String ?? "Сообщение"
-
         case "messagePhoto":
             return "📷 Фото"
-
         case "messageVideo":
             return "🎬 Видео"
-
         case "messageVoiceNote":
             return "🎤 Голосовое сообщение"
-
         case "messageDocument":
             return "📎 Файл"
-
         case "messageSticker":
             return "🎨 Стикер"
-
         case "messageAnimation":
             return "GIF"
-
         case "messageAudio":
             return "🎵 Аудио"
-
         case "messageLocation":
             return "📍 Геопозиция"
-
         default:
             return "Сообщение"
         }
     }
 
     private func messageTime(_ message: [String: Any]) -> String {
-        guard let date = message["date"] as? Int else {
+        guard let date = (message["date"] as? NSNumber)?.intValue else {
             return ""
         }
 
@@ -437,7 +416,6 @@ final class TelegramAuth: ObservableObject {
 
     func sendMessage(chatID: Int64, text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-
         guard !trimmed.isEmpty else { return }
 
         send([
@@ -490,7 +468,7 @@ struct ContentView: View {
     }
 }
 
-// MARK: - АНИМАЦИЯ ЗАПУСКА
+// MARK: - АНИМАЦИЯ ЗАПУСКА (Совместимо с iOS 16)
 
 struct SplashView: View {
     @State private var scale: CGFloat = 0.75
@@ -506,7 +484,7 @@ struct SplashView: View {
                     .foregroundColor(.green)
                     .scaleEffect(scale)
                     .shadow(
-                        color: .green.opacity(glow ? 0.8 : 0.15),
+                        color: Color.green.opacity(glow ? 0.8 : 0.15),
                         radius: glow ? 28 : 8
                     )
 
@@ -525,12 +503,12 @@ struct SplashView: View {
             }
         }
         .onAppear {
-            withAnimation(.spring(duration: 0.8)) {
-                scale = 1
+            withAnimation(.spring(response: 0.8, dampingFraction: 0.7)) {
+                scale = 1.0
             }
 
             withAnimation(
-                .easeInOut(duration: 1.1).repeatForever()
+                Animation.easeInOut(duration: 1.1).repeatForever(autoreverses: true)
             ) {
                 glow = true
             }
@@ -671,7 +649,7 @@ struct ChatListView: View {
     }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ZStack {
                 Color.black.ignoresSafeArea()
 
@@ -817,9 +795,8 @@ struct ChatListView: View {
                     .padding(.bottom, 12)
                 }
             }
-            .navigationBarHidden(true)
+            .toolbar(.hidden, for: .navigationBar)
         }
-        .navigationViewStyle(.stack)
         .preferredColorScheme(.dark)
     }
 }
@@ -834,17 +811,17 @@ struct ChatCellView: View {
             Circle()
                 .fill(
                     LinearGradient(
-                        colors: [.gray.opacity(0.5), .black],
+                        colors: [Color.gray.opacity(0.5), Color.black],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
                 )
                 .frame(width: 56, height: 56)
-                .overlay {
+                .overlay(
                     Text(String(chat.title.prefix(1)).uppercased())
                         .font(.title3.bold())
                         .foregroundColor(.white)
-                }
+                )
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
@@ -951,9 +928,6 @@ struct ChatDetailView: View {
         .background(Color.black.ignoresSafeArea())
         .navigationTitle(chat.title)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarColorScheme(.dark, for: .navigationBar)
-        .toolbarBackground(Color.black, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
         .onAppear {
             auth.openChat(chat)
         }
@@ -982,7 +956,7 @@ struct MessageBubble: View {
 
                 Text(message.formattedTime)
                     .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.6))
+                    .foregroundColor(Color.white.opacity(0.6))
             }
             .padding(12)
             .background(
