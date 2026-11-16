@@ -67,7 +67,7 @@ final class TelegramAuth: ObservableObject {
             return
         }
 
-        client.send(query: data, completion: nil)
+      client.send(query: data)
     }
 
     // MARK: Обработка TDLib
