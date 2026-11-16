@@ -1,39 +1,34 @@
 name: Build iOS App
-on: push: branches: [ main ] workflow_dispatch:
-jobs: build: runs-on: macos-13
-steps:
-- name: Checkout repository
-  uses: actions/checkout@v4
-
-- name: Select Xcode
-  run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
-
-- name: Install XcodeGen
-  run: brew install xcodegen
-
-- name: Generate Xcode Project
-  run: xcodegen generate
-
-- name: Build App (Unsigned)
-  run: |
-    xcodebuild clean build \
-      -project Whogram.xcodeproj \
-      -scheme Whogram \
-      -configuration Release \
-      -sdk iphoneos \
-      CODE_SIGN_IDENTITY="" \
-      CODE_SIGNING_REQUIRED=NO \
-      CODE_SIGNING_ALLOWED=NO \
-      CONFIGURATION_BUILD_DIR=$GITHUB_WORKSPACE/build
-
-- name: Package to IPA
-  run: |
-    mkdir -p Payload
-    cp -r $GITHUB_WORKSPACE/build/Whogram.app Payload/
-    zip -r Whogram.ipa Payload
-
-- name: Upload IPA Artifact
-  uses: actions/upload-artifact@v4
-  with:
-    name: Whogram-IPA
-    path: Whogram.ipa
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+      - name: Setup & Generate Project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Build Unsigned App
+        run: |
+          xcodebuild clean build \
+            -project Whogram.xcodeproj \
+            -scheme Whogram \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CONFIGURATION_BUILD_DIR=$GITHUB_WORKSPACE/build
+      - name: Package to IPA
+        run: |
+          mkdir -p Payload
+          cp -r $GITHUB_WORKSPACE/build/Whogram.app Payload/
+          zip -r Whogram.ipa Payload
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Whogram-IPA
+          path: Whogram.ipa
