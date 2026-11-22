@@ -1,9 +1,3 @@
-#!/bin/bash
-
-echo "Начинаем Этапы 2 и 3: Исправление экрана, Чаты и Сообщения..."
-
-# 1. ИСПРАВЛЯЕМ КВАДРАТНЫЙ ЭКРАН (Добавляем UILaunchScreen)
-cat << 'EOF' > project.yml
 name: Whogram
 options:
   bundleIdPrefix: com.whomakson
