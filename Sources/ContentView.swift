@@ -3,8 +3,8 @@ import TDLibKit
 
 // MARK: - НАСТРОЙКИ TELEGRAM
 
-private let TELEGRAM_API_ID = 8
-private let TELEGRAM_API_HASH = "7245de8e7483adf3178e4c7ab3280fd6"
+private let TELEGRAM_API_ID = 2086616
+private let TELEGRAM_API_HASH = "f7f60be4652cacd57a47e695da26f04d"
 
 // MARK: - МОДЕЛИ
 
