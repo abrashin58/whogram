@@ -7,10 +7,10 @@ targets:
     platform: iOS
     deploymentTarget: "16.0"
     sources:
-      - path: Sources
-    info:
-      properties:
-        UILaunchScreen: {}
+      - Sources
+    settings:
+      base:
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
     dependencies:
       - package: TDLibKit
 packages:
