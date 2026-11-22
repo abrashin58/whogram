@@ -1,19 +1,25 @@
+#!/bin/bash
+
+echo "Начинаем Этапы 2 и 3: Исправление экрана, Чаты и Сообщения..."
+
+# 1. ИСПРАВЛЯЕМ КВАДРАТНЫЙ ЭКРАН (Добавляем UILaunchScreen)
+cat << 'EOF' > project.yml
 name: Whogram
 options:
-  bundleIdPrefix: com.abrashin
-packages:
-  TDLibKit:
-    url: https://github.com/Swiftgram/TDLibKit.git
-    branch: main
+  bundleIdPrefix: com.whomakson
 targets:
   Whogram:
     type: application
     platform: iOS
     deploymentTarget: "16.0"
-    sources: 
-      - Sources
+    sources:
+      - path: Sources
+    info:
+      properties:
+        UILaunchScreen: {}
     dependencies:
       - package: TDLibKit
-    settings:
-      base:
-        GENERATE_INFOPLIST_FILE: YES
+packages:
+  TDLibKit:
+    url: https://github.com/Swiftgram/TDLibKit
+    from: 1.8.31

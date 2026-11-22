@@ -3,7 +3,6 @@ import TDLibKit
 
 final class TDLibManager: ObservableObject {
     static let shared = TDLibManager()
-    
     private var client: TdClient!
     
     @Published var authorizationState: String = "wait_tdlib_parameters"
@@ -12,16 +11,13 @@ final class TDLibManager: ObservableObject {
     @Published var errorMessage: String?
     @Published var statusMessage = "Инициализация..."
     
-    // Данные
     @Published var chats: [RealChat] = []
     @Published var messages: [Int64: [RealMessage]] = [:]
     
     private init() {
         client = TdClientImpl(completionQueue: .main)
         client.run { [weak self] data in
-            DispatchQueue.main.async {
-                self?.handleUpdate(data)
-            }
+            DispatchQueue.main.async { self?.handleUpdate(data) }
         }
     }
     
@@ -35,10 +31,7 @@ final class TDLibManager: ObservableObject {
     }
     
     func send(_ object: [String: Any]) {
-        guard JSONSerialization.isValidJSONObject(object) else {
-            errorMessage = "Ошибка сериализации запроса"
-            return
-        }
+        guard JSONSerialization.isValidJSONObject(object) else { return }
         try? client.send(query: RawTdQuery(object: object), completion: nil)
     }
     
@@ -47,7 +40,7 @@ final class TDLibManager: ObservableObject {
               let type = json["@type"] as? String else { return }
         
         if type == "error" {
-            let message = json["message"] as? String ?? "Неизвестная ошибка"
+            let message = json["message"] as? String ?? "Ошибка"
             let code = json["code"] as? Int ?? 0
             self.errorMessage = "\(code): \(message)"
             self.statusMessage = "Сбой"
@@ -57,9 +50,7 @@ final class TDLibManager: ObservableObject {
         
         switch type {
         case "updateAuthorizationState":
-            if let state = json["authorization_state"] as? [String: Any] {
-                handleAuthState(state)
-            }
+            if let state = json["authorization_state"] as? [String: Any] { handleAuthState(state) }
         case "updateNewChat":
             if let chat = json["chat"] as? [String: Any] { updateChat(chat) }
         case "updateChatLastMessage":
@@ -69,9 +60,23 @@ final class TDLibManager: ObservableObject {
                 chats[index].lastMessage = parseMessageText(msg)
                 chats[index].time = parseMessageTime(msg)
             }
-        // Здесь в будущем добавим обработку сообщений (Этап 3)
-        default:
-            break
+        case "updateNewMessage":
+            if let message = json["message"] as? [String: Any] {
+                updateMessage(message)
+            }
+        case "messages":
+            if let items = json["messages"] as? [[String: Any]],
+               let firstMsg = items.first,
+               let chatID = (firstMsg["chat_id"] as? NSNumber)?.int64Value {
+                let parsed = items.compactMap(parseMessage)
+                var current = messages[chatID] ?? []
+                for msg in parsed {
+                    if !current.contains(where: { $0.id == msg.id }) { current.append(msg) }
+                }
+                // Сортируем по убыванию (новые сверху) для перевернутого скролла
+                messages[chatID] = current.sorted { $0.id > $1.id }
+            }
+        default: break
         }
     }
     
@@ -101,8 +106,7 @@ final class TDLibManager: ObservableObject {
             isLoading = false
             statusMessage = "Подключено"
             loadChats()
-        default:
-            break
+        default: break
         }
     }
     
@@ -136,10 +140,37 @@ final class TDLibManager: ObservableObject {
     }
     
     func loadChats() {
+        send(["@type": "loadChats", "chat_list": ["@type": "chatListMain"], "limit": 100])
+    }
+    
+    func openChat(_ chatID: Int64) {
+        send(["@type": "openChat", "chat_id": chatID])
         send([
-            "@type": "loadChats",
-            "chat_list": ["@type": "chatListMain"],
-            "limit": 50
+            "@type": "getChatHistory",
+            "chat_id": chatID,
+            "from_message_id": 0,
+            "offset": 0,
+            "limit": 50,
+            "only_local": false
+        ])
+    }
+    
+    func closeChat(_ chatID: Int64) {
+        send(["@type": "closeChat", "chat_id": chatID])
+    }
+    
+    func sendMessage(chatID: Int64, text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        
+        send([
+            "@type": "sendMessage",
+            "chat_id": chatID,
+            "input_message_content": [
+                "@type": "inputMessageText",
+                "text": ["@type": "formattedText", "text": trimmed, "entities": []],
+                "clear_draft": true
+            ]
         ])
     }
     
@@ -149,8 +180,7 @@ final class TDLibManager: ObservableObject {
         
         let last = chat["last_message"] as? [String: Any]
         let item = RealChat(
-            id: id,
-            title: title,
+            id: id, title: title,
             lastMessage: last.map { parseMessageText($0) } ?? "Нет сообщений",
             time: last.map { parseMessageTime($0) } ?? "",
             unreadCount: (chat["unread_count"] as? NSNumber)?.intValue ?? 0
@@ -160,6 +190,33 @@ final class TDLibManager: ObservableObject {
             chats[idx] = item
         } else {
             chats.append(item)
+        }
+    }
+    
+    private func parseMessage(_ message: [String: Any]) -> RealMessage? {
+        guard let id = (message["id"] as? NSNumber)?.int64Value else { return nil }
+        return RealMessage(
+            id: id,
+            text: parseMessageText(message),
+            date: (message["date"] as? NSNumber)?.intValue ?? 0,
+            isOutgoing: (message["is_outgoing"] as? Bool) ?? false
+        )
+    }
+    
+    private func updateMessage(_ message: [String: Any]) {
+        guard let chatID = (message["chat_id"] as? NSNumber)?.int64Value,
+              let item = parseMessage(message) else { return }
+        
+        var current = messages[chatID] ?? []
+        if !current.contains(where: { $0.id == item.id }) {
+            current.append(item)
+            current.sort { $0.id > $1.id } // Новые сверху
+        }
+        messages[chatID] = current
+        
+        if let idx = chats.firstIndex(where: { $0.id == chatID }) {
+            chats[idx].lastMessage = item.text
+            chats[idx].time = item.formattedTime
         }
     }
     
@@ -173,6 +230,9 @@ final class TDLibManager: ObservableObject {
         case "messagePhoto": return "📷 Фото"
         case "messageVideo": return "🎬 Видео"
         case "messageVoiceNote": return "🎤 Голосовое сообщение"
+        case "messageDocument": return "📎 Файл"
+        case "messageSticker": return "🎨 Стикер"
+        case "messageAnimation": return "GIF"
         default: return "Медиа"
         }
     }
