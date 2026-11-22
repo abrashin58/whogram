@@ -91,11 +91,12 @@ private func send(_ object: [String: Any]) {
         if type == "error" {
             let message = json["message"] as? String ?? "Ошибка TDLib"
             let code = json["code"] as? Int ?? 0
-            if code != 400 {
-                errorMessage = "\(code): \(message)"
-                statusMessage = message
-            }
+            
+            // ТЕПЕРЬ ОШИБКИ НЕ СКРЫВАЮТСЯ, ДАЖЕ 400
+            errorMessage = "\(code): \(message)"
+            statusMessage = "Сбой"
             isLoading = false
+            
             return
         }
 
@@ -256,9 +257,16 @@ private func send(_ object: [String: Any]) {
         errorMessage = nil
         statusMessage = "Запрос авторизации..."
 
+        // ТЕПЕРЬ ПЕРЕДАЕТСЯ ОБЯЗАТЕЛЬНЫЙ ПАРАМЕТР settings
         send([
             "@type": "setAuthenticationPhoneNumber",
-            "phone_number": phone
+            "phone_number": phone,
+            "settings": [
+                "@type": "phoneNumberAuthenticationSettings",
+                "allow_flash_call": false,
+                "is_current_phone_number": false,
+                "allow_sms_retriever_api": false
+            ]
         ])
     }
 
@@ -600,6 +608,7 @@ struct LoginView: View {
         }
     }
 
+    // ТЕПЕРЬ КЛАВИАТУРА И ТИПЫ ДАННЫХ НАТИВНЫЕ ДЛЯ IOS
     private func inputField(
         _ title: String,
         text: Binding<String>,
@@ -608,12 +617,16 @@ struct LoginView: View {
         Group {
             if secure {
                 SecureField(title, text: text)
+                    .textContentType(.password)
             } else {
                 TextField(title, text: text)
                     .keyboardType(
-                        title.contains("телефона") ||
-                        title.contains("Код")
-                        ? .numberPad : .default
+                        title.contains("телефона") ? .phonePad :
+                        title.contains("Код") ? .numberPad : .default
+                    )
+                    .textContentType(
+                        title.contains("телефона") ? .telephoneNumber :
+                        title.contains("Код") ? .oneTimeCode : .none
                     )
             }
         }
