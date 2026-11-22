@@ -982,4 +982,3 @@ struct MessageBubble: View {
         }
     }
 }
-
