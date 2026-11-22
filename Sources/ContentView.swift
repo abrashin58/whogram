@@ -561,6 +561,15 @@ struct LoginView: View {
                     .foregroundColor(.gray)
                     .multilineTextAlignment(.center)
 
+                // ОШИБКА ПЕРЕНЕСЕНА СЮДА (НАД ПОЛЯМИ ВВОДА)
+                if let error = auth.errorMessage {
+                    Text(error)
+                        .font(.callout.bold())
+                        .foregroundColor(.red)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                }
+
                 VStack(spacing: 16) {
                     if auth.showPasswordField {
                         inputField(
@@ -592,14 +601,6 @@ struct LoginView: View {
                 if auth.isLoading {
                     ProgressView()
                         .tint(.green)
-                }
-
-                if let error = auth.errorMessage {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundColor(.red)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
                 }
 
                 Spacer()
