@@ -3,8 +3,8 @@ import TDLibKit
 
 // MARK: - НАСТРОЙКИ TELEGRAM
 
-private let TELEGRAM_API_ID = 94575
-private let TELEGRAM_API_HASH = "a3406de8d171bb422bb6ddf3bbd800e2"
+private let TELEGRAM_API_ID = 8
+private let TELEGRAM_API_HASH = "7245de8e7483adf3178e4c7ab3280fd6"
 
 // MARK: - МОДЕЛИ
 
@@ -982,3 +982,4 @@ struct MessageBubble: View {
         }
     }
 }
+
