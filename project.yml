@@ -16,4 +16,4 @@ targets:
 packages:
   TDLibKit:
     url: https://github.com/Swiftgram/TDLibKit
-    from: 1.8.31
+    branch: main
