@@ -13,7 +13,7 @@ struct RealMessage: Identifiable, Equatable {
     let text: String
     let date: Int
     let isOutgoing: Bool
-    
+
     var formattedTime: String {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"

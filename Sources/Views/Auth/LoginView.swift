@@ -3,21 +3,21 @@ import SwiftUI
 struct LoginView: View {
     @EnvironmentObject var tdlib: TDLibManager
     @StateObject private var vm = AuthViewModel()
-    
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            
+
             VStack(spacing: 24) {
                 Spacer()
                 Image(systemName: "lock.shield.fill")
                     .font(.system(size: 64))
                     .foregroundColor(.green)
-                
+
                 Text("Вход")
                     .font(.largeTitle.bold())
                     .foregroundColor(.white)
-                
+
                 if let error = tdlib.errorMessage {
                     Text(error)
                         .font(.callout.bold())
@@ -27,14 +27,14 @@ struct LoginView: View {
                     Text(tdlib.statusMessage)
                         .foregroundColor(.gray)
                 }
-                
+
                 VStack(spacing: 16) {
                     if tdlib.authorizationState == "authorizationStateWaitPassword" {
                         SecureField("Облачный пароль", text: $vm.password)
                             .textContentType(.password)
                             .padding()
                             .liquidGlass()
-                        
+
                         Button("Подтвердить", action: vm.submitPassword)
                             .buttonStyle(PrimaryButtonStyle())
                     } else if tdlib.authorizationState == "authorizationStateWaitCode" {
@@ -43,7 +43,7 @@ struct LoginView: View {
                             .textContentType(.oneTimeCode)
                             .padding()
                             .liquidGlass()
-                        
+
                         Button("Проверить", action: vm.submitCode)
                             .buttonStyle(PrimaryButtonStyle())
                     } else {
@@ -52,14 +52,19 @@ struct LoginView: View {
                             .textContentType(.telephoneNumber)
                             .padding()
                             .liquidGlass()
-                        
+
                         Button("Далее", action: vm.submitPhone)
                             .buttonStyle(PrimaryButtonStyle())
                     }
                 }
                 .foregroundColor(.white)
                 .padding(.horizontal, 30)
-                
+
+                if tdlib.isLoading {
+                    ProgressView()
+                        .tint(.green)
+                }
+
                 Spacer()
             }
         }

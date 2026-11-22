@@ -4,22 +4,21 @@ struct ChatListView: View {
     @EnvironmentObject var tdlib: TDLibManager
     @State private var searchText = ""
     @State private var selectedFolder = "Все"
-    
+
     let folders = ["Все", "Личное", "Работа", "Каналы"]
-    
+
     var filteredChats: [RealChat] {
         tdlib.chats.filter { chat in
             searchText.isEmpty || chat.title.localizedCaseInsensitiveContains(searchText)
         }
     }
-    
+
     var body: some View {
         NavigationStack {
             ZStack {
                 Color.black.ignoresSafeArea()
-                
+
                 VStack(spacing: 0) {
-                    // Поиск
                     HStack {
                         Image(systemName: "magnifyingglass").foregroundColor(.gray)
                         TextField("Поиск", text: $searchText)
@@ -30,8 +29,7 @@ struct ChatListView: View {
                     .cornerRadius(10)
                     .padding(.horizontal)
                     .padding(.top, 10)
-                    
-                    // Папки
+
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 12) {
                             ForEach(folders, id: \.self) { folder in
@@ -50,8 +48,7 @@ struct ChatListView: View {
                         .padding(.horizontal)
                     }
                     .padding(.vertical, 10)
-                    
-                    // Список
+
                     ScrollView {
                         LazyVStack(spacing: 0) {
                             ForEach(filteredChats) { chat in
@@ -80,7 +77,7 @@ struct ChatCell: View {
                 .fill(LinearGradient(colors: [Color.gray.opacity(0.5), .black], startPoint: .topLeading, endPoint: .bottomTrailing))
                 .frame(width: 56, height: 56)
                 .overlay(Text(String(chat.title.prefix(1))).font(.title3.bold()).foregroundColor(.white))
-            
+
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text(chat.title).font(.headline).foregroundColor(.white).lineLimit(1)

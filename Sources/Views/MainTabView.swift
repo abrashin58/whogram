@@ -7,7 +7,7 @@ struct MainTabView: View {
                 .tabItem {
                     Label("Чаты", systemImage: "message.fill")
                 }
-            
+
             SettingsView()
                 .tabItem {
                     Label("Настройки", systemImage: "gearshape.fill")
