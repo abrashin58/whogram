@@ -1,18 +1,60 @@
 name: Whogram
+
 options:
   bundleIdPrefix: com.whomakson
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "16.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+
 targets:
   Whogram:
     type: application
     platform: iOS
-    deploymentTarget: "16.0"
     sources:
-      - Sources
+      - path: Sources
+    # XcodeGen сам создаст Info.plist по этому пути.
+    # Без Info.plist (или GENERATE_INFOPLIST_FILE) сборка падает с exit code 65.
+    info:
+      path: Support/Info.plist
+      properties:
+        CFBundleDisplayName: Whogram
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        LSRequiresIPhoneOS: true
+        UIRequiresFullScreen: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
     settings:
       base:
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.whomakson.whogram
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTS_MACCATALYST: "NO"
+        CODE_SIGN_STYLE: Automatic
     dependencies:
       - package: TDLibKit
+        product: TDLibKit
+
+schemes:
+  Whogram:
+    build:
+      targets:
+        Whogram: all
+    run:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+
 packages:
   TDLibKit:
     url: https://github.com/Swiftgram/TDLibKit

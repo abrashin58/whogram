@@ -10,6 +10,7 @@ struct LoginView: View {
 
             VStack(spacing: 24) {
                 Spacer()
+
                 Image(systemName: "lock.shield.fill")
                     .font(.system(size: 64))
                     .foregroundColor(.green)
@@ -18,47 +19,9 @@ struct LoginView: View {
                     .font(.largeTitle.bold())
                     .foregroundColor(.white)
 
-                if let error = tdlib.errorMessage {
-                    Text(error)
-                        .font(.callout.bold())
-                        .foregroundColor(.red)
-                        .multilineTextAlignment(.center)
-                } else {
-                    Text(tdlib.statusMessage)
-                        .foregroundColor(.gray)
-                }
+                statusView
 
-                VStack(spacing: 16) {
-                    if tdlib.authorizationState == "authorizationStateWaitPassword" {
-                        SecureField("Облачный пароль", text: $vm.password)
-                            .textContentType(.password)
-                            .padding()
-                            .liquidGlass()
-
-                        Button("Подтвердить", action: vm.submitPassword)
-                            .buttonStyle(PrimaryButtonStyle())
-                    } else if tdlib.authorizationState == "authorizationStateWaitCode" {
-                        TextField("Код", text: $vm.code)
-                            .keyboardType(.numberPad)
-                            .textContentType(.oneTimeCode)
-                            .padding()
-                            .liquidGlass()
-
-                        Button("Проверить", action: vm.submitCode)
-                            .buttonStyle(PrimaryButtonStyle())
-                    } else {
-                        TextField("Номер телефона", text: $vm.phone)
-                            .keyboardType(.phonePad)
-                            .textContentType(.telephoneNumber)
-                            .padding()
-                            .liquidGlass()
-
-                        Button("Далее", action: vm.submitPhone)
-                            .buttonStyle(PrimaryButtonStyle())
-                    }
-                }
-                .foregroundColor(.white)
-                .padding(.horizontal, 30)
+                inputSection
 
                 if tdlib.isLoading {
                     ProgressView()
@@ -68,6 +31,71 @@ struct LoginView: View {
                 Spacer()
             }
         }
+    }
+
+    @ViewBuilder
+    private var statusView: some View {
+        if let error = tdlib.errorMessage {
+            Text(error)
+                .font(.callout.bold())
+                .foregroundColor(.red)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 30)
+        } else {
+            Text(tdlib.statusMessage)
+                .foregroundColor(.gray)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 30)
+        }
+    }
+
+    @ViewBuilder
+    private var inputSection: some View {
+        VStack(spacing: 16) {
+            switch tdlib.authorizationState {
+            case "authorizationStateWaitPassword":
+                SecureField("Облачный пароль", text: $vm.password)
+                    .textContentType(.password)
+                    .padding()
+                    .liquidGlass()
+
+                Button("Подтвердить") { vm.submitPassword() }
+                    .buttonStyle(PrimaryButtonStyle())
+                    .disabled(tdlib.isLoading)
+
+            case "authorizationStateWaitCode":
+                TextField("Код из Telegram", text: $vm.code)
+                    .keyboardType(.numberPad)
+                    .textContentType(.oneTimeCode)
+                    .padding()
+                    .liquidGlass()
+
+                Button("Проверить") { vm.submitCode() }
+                    .buttonStyle(PrimaryButtonStyle())
+                    .disabled(tdlib.isLoading)
+
+                Button("Отправить код ещё раз") { tdlib.resendCode() }
+                    .font(.footnote)
+                    .foregroundColor(.green)
+                    .disabled(tdlib.isLoading)
+
+            case "authorizationStateWaitPhoneNumber":
+                TextField("Номер телефона", text: $vm.phone)
+                    .keyboardType(.phonePad)
+                    .textContentType(.telephoneNumber)
+                    .padding()
+                    .liquidGlass()
+
+                Button("Далее") { vm.submitPhone() }
+                    .buttonStyle(PrimaryButtonStyle())
+                    .disabled(tdlib.isLoading)
+
+            default:
+                EmptyView()
+            }
+        }
+        .foregroundColor(.white)
+        .padding(.horizontal, 30)
     }
 }
 
