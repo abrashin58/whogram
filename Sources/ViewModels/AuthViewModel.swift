@@ -9,6 +9,14 @@ final class AuthViewModel: ObservableObject {
 
     private var tdlib: TDLibManager { TDLibManager.shared }
 
+    func clear() {
+        phone = "+7"
+        code = ""
+        password = ""
+        email = ""
+        emailCode = ""
+    }
+
     func submitPhone() {
         tdlib.submitAuthentication([
             "@type": "setAuthenticationPhoneNumber",

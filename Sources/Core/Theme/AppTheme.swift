@@ -143,7 +143,7 @@ final class ThemeManager: ObservableObject {
             state = ThemeSelection(preset: .custom, custom: profile.validated)
             persist()
         } else {
-            state = ThemeSelection(preset: .neonPulse, custom: nil)
+            state = ThemeSelection(preset: .firstLaunch, custom: nil)
         }
         if let url = Self.wallpaperURL {
             wallpaperImage = UIImage(contentsOfFile: url.path)

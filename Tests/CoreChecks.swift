@@ -7,6 +7,7 @@ struct CoreChecks {
         try checkThemes()
         try checkSessionFolders()
         try checkSessionSafety()
+        try checkAccountCatalog()
         checkHistory()
         print("OK: темы, HEX, изоляция сессии, разрешения TDLib, курсор истории, звуковая волна")
     }
@@ -25,8 +26,13 @@ struct CoreChecks {
 
     static func checkThemes() throws {
         let presets = ThemePreset.allCases.filter { $0 != .custom }.map(\.profile)
-        precondition(presets.count == 7)
-        precondition(Set(presets.map(\.darkBackground)).count == 7)
+        precondition(presets.count == 8)
+        precondition(Set(presets.map(\.darkBackground)).count == 8)
+        let firstLaunch = ThemePreset.firstLaunch.profile
+        precondition(firstLaunch.appearance == .light && firstLaunch.lightBackground == 0xFFFFFF)
+        precondition(firstLaunch.wallpaper == .plain && firstLaunch.surface == .flat)
+        precondition(firstLaunch.outgoingStart == 0xD5EEFF && firstLaunch.incomingColor != firstLaunch.lightBackground)
+        precondition(ThemePreset.telegram.profile.appearance == .system)
         precondition(ThemePreset.oled.profile.darkBackground == 0)
         precondition(!ThemePreset.oled.profile.motion && !ThemePreset.minimal.profile.motion)
         precondition(ThemePreset.liquidGlass.profile.surface == .glass)
@@ -93,7 +99,7 @@ struct CoreChecks {
         let marker = first.database.appendingPathComponent("existing")
         let data = Data([7, 18])
         try data.write(to: marker)
-        let second = try SessionFolders.prepare(storageID: storageID, applicationSupport: support)
+        let second = try SessionFolders.prepare(storageID: storageID, requiresExistingDatabase: true, applicationSupport: support)
         precondition(first.database == second.database && first.files == second.files)
         precondition(second.database.path.hasSuffix("/WhogramSessions/\(storageID.uuidString)/Database"))
         let different = try SessionFolders.prepare(storageID: UUID(), applicationSupport: support)
@@ -103,6 +109,13 @@ struct CoreChecks {
         let legacyPersisted = try Data(contentsOf: legacyMarker)
         precondition(legacyPersisted == legacyData)
         precondition(!fm.fileExists(atPath: first.database.appendingPathComponent("td.binlog").path))
+        let missingID = UUID()
+        do {
+            _ = try SessionFolders.prepare(storageID: missingID, requiresExistingDatabase: true, applicationSupport: support)
+            preconditionFailure("Пропавшая база не должна создаваться заново")
+        } catch SessionCatalogError.missingDatabase {
+            precondition(!fm.fileExists(atPath: support.appendingPathComponent("WhogramSessions/\(missingID.uuidString)").path))
+        }
         do {
             _ = try SessionFolders.prepare(storageID: storageID, applicationSupport: marker)
             preconditionFailure("Ожидалась ошибка создания каталога")
@@ -114,7 +127,6 @@ struct CoreChecks {
     static func checkSessionSafety() throws {
         let hash = String(repeating: "AB", count: 16)
         precondition((try? TelegramAppIdentity(id: "", hash: hash)) == nil)
-        precondition((try? TelegramAppIdentity(id: "2086616", hash: hash)) == nil)
         precondition((try? TelegramAppIdentity(id: "93451234", hash: "abcd")) == nil)
         let configured = try TelegramAppIdentity(id: " 93451234 ", hash: hash)
         let roundTrip = try JSONDecoder().decode(TelegramAppIdentity.self, from: JSONEncoder().encode(configured))
@@ -140,9 +152,37 @@ struct CoreChecks {
         precondition(!SessionRequestPolicy.allows("setTdlibParameters", scope: .ordinary))
         precondition(SessionRequestPolicy.allows("checkAuthenticationCode", scope: .authentication))
         precondition(!SessionRequestPolicy.allows("checkAuthenticationCode", scope: .ordinary))
+        precondition(SessionRequestPolicy.matchesAuthState("checkAuthenticationCode", state: "authorizationStateWaitCode"))
+        precondition(!SessionRequestPolicy.matchesAuthState("checkAuthenticationCode", state: "authorizationStateWaitPassword"))
         precondition(SessionRequestPolicy.securityCode(in: "401: SESSION_REVOKED") == "SESSION_REVOKED")
         precondition(SessionRequestPolicy.securityCode(in: "CONNECTION_API_ID_INVALID") == "CONNECTION_API_ID_INVALID")
         precondition(SessionRequestPolicy.securityCode(in: "unrecognized 123456") == nil)
+    }
+
+    static func checkAccountCatalog() throws {
+        let id = "93451234"
+        let syntheticHash = String(repeating: "a", count: 32)
+        let first = try TelegramAppIdentity(id: id, hash: syntheticHash)
+        let second = try TelegramAppIdentity(id: id, hash: syntheticHash)
+        var catalog = SessionCatalog(legacyIdentity: first)
+        precondition(catalog.selectedID == first.storageID && catalog.profiles[0].databaseKey == nil)
+        catalog.confirmAuthorization(for: first.storageID, title: "First")
+        let secondKey = Data(repeating: 8, count: 32)
+        catalog.add(second, databaseKey: secondKey)
+        precondition(catalog.selectedID == second.storageID && first.storageID != second.storageID)
+        catalog.add(second, databaseKey: secondKey)
+        precondition(catalog.profiles.count == 2)
+        catalog.confirmAuthorization(for: second.storageID)
+        catalog.confirmLocalLogout(for: second.storageID)
+        precondition(catalog.profile(first.storageID)?.wasAuthorized == true)
+        precondition(catalog.profile(second.storageID)?.wasAuthorized == false)
+        catalog.select(first.storageID)
+        catalog.select(UUID())
+        let decoded = try JSONDecoder().decode(SessionCatalog.self, from: JSONEncoder().encode(catalog)).validated()
+        precondition(decoded == catalog && decoded.selectedID == first.storageID)
+        precondition(decoded.profile(second.storageID)?.databaseKey == secondKey)
+        let corrupt = try JSONDecoder().decode(SessionCatalog.self, from: Data(#"{"profiles":[],"selectedID":"00000000-0000-0000-0000-000000000000"}"#.utf8))
+        precondition((try? corrupt.validated()) == nil)
     }
 
     static func checkHistory() {

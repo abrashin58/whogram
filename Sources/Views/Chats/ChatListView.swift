@@ -2,6 +2,7 @@ import SwiftUI
 
 enum ChatFolder: String, CaseIterable, Identifiable {
     case all
+    case unread
     case personal
     case groups
     case channels
@@ -11,6 +12,7 @@ enum ChatFolder: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .all: return "Все"
+        case .unread: return "Непрочитанные"
         case .personal: return "Личные"
         case .groups: return "Группы"
         case .channels: return "Каналы"
@@ -20,6 +22,7 @@ enum ChatFolder: String, CaseIterable, Identifiable {
     func matches(_ chat: RealChat) -> Bool {
         switch self {
         case .all: return true
+        case .unread: return chat.unreadCount > 0 || chat.isMarkedAsUnread
         case .personal: return !chat.isGroup && !chat.isChannel
         case .groups: return chat.isGroup
         case .channels: return chat.isChannel

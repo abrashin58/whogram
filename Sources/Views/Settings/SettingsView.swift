@@ -79,6 +79,23 @@ struct SettingsView: View {
                             Divider().overlay(theme.separator)
 
                             Button {
+                                tdlib.disconnectToAccounts()
+                            } label: {
+                                settingRow(icon: "person.2", color: theme.accent.main,
+                                           title: "Сменить или добавить аккаунт",
+                                           value: tdlib.closeRequested ? "Закрываем…" : (tdlib.sessionTitle ?? ""))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!tdlib.isSessionReady)
+                            if let error = tdlib.errorMessage {
+                                Text(error)
+                                    .font(theme.smallFont)
+                                    .foregroundColor(.red)
+                                    .padding(.horizontal, 14)
+                            }
+                            Divider().overlay(theme.separator)
+
+                            Button {
                                 showLogout = true
                             } label: {
                                 HStack {
@@ -93,6 +110,7 @@ struct SettingsView: View {
                                 .padding(.vertical, 13)
                             }
                             .buttonStyle(.plain)
+                            .disabled(!tdlib.isSessionReady)
                         }
 
                         section(title: "О приложении") {

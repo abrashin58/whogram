@@ -12,6 +12,15 @@ struct LoginView: View {
     @State private var apiID = ""
     @State private var apiHash = ""
     @State private var confirmConnection = false
+    @State private var confirmReauthentication = false
+    @State private var requestedProfile: UUID?
+
+    private var isPublicIdentity: Bool {
+        if let requestedProfile {
+            return tdlib.profiles.first { $0.id == requestedProfile }?.identity.apiID == TelegramAppIdentity.previouslyPublicID
+        }
+        return Int32(apiID.trimmingCharacters(in: .whitespacesAndNewlines)) == TelegramAppIdentity.previouslyPublicID
+    }
 
     var body: some View {
         ZStack {
@@ -41,21 +50,30 @@ struct LoginView: View {
                 appeared = true
             }
         }
-        .alert("Подключиться к Telegram?", isPresented: $confirmConnection) {
+        .alert(isPublicIdentity ? "Ранее опубликованный API ID" : "Подключиться к Telegram?", isPresented: $confirmConnection) {
             Button("Отмена", role: .cancel) {}
-            Button("Подключиться") {
-                if editingIdentity || !tdlib.hasConfiguredIdentity {
-                    if tdlib.connectWithNewIdentity(id: apiID, hash: apiHash) {
+            Button(isPublicIdentity ? "Понимаю риск, подключиться" : "Подключиться") {
+                if let requestedProfile {
+                    tdlib.connectProfile(requestedProfile, acknowledgePublicIdentity: isPublicIdentity)
+                } else {
+                    if tdlib.addProfile(id: apiID, hash: apiHash, acknowledgePublicIdentity: isPublicIdentity) {
                         apiID = ""
                         apiHash = ""
                         editingIdentity = false
                     }
-                } else {
-                    tdlib.connectUsingSavedIdentity()
                 }
+                viewModel.clear()
             }
         } message: {
-            Text("После отзыва сеансов не проверяйте вход на основном аккаунте. Сначала используйте отдельный тестовый аккаунт.")
+            Text(isPublicIdentity
+                 ? "Эта пара ранее была в открытом репозитории. Telegram может отклонить вход или завершить сеансы. Не используйте основной аккаунт."
+                 : "Не используйте основной аккаунт для проверки после массового завершения сеансов. Выберите отдельный тестовый аккаунт.")
+        }
+        .alert("Начать новую авторизацию?", isPresented: $confirmReauthentication) {
+            Button("Отмена", role: .cancel) {}
+            Button("Продолжить") { tdlib.allowReauthentication() }
+        } message: {
+            Text("TDLib не восстановил сеанс. Прежде чем запрашивать новый код, проверьте активные сеансы в официальном Telegram.")
         }
     }
 
@@ -115,8 +133,15 @@ struct LoginView: View {
         VStack(spacing: 12) {
             if tdlib.needsConnectionApproval {
                 connectionForm
+            } else if tdlib.closeRequested {
+                ProgressView().tint(theme.accent.main)
+                Text("Закрываем соединение без выхода из аккаунта…")
             } else {
                 authenticationForm
+                if !tdlib.isLoading || tdlib.authorizationState == "authorizationStateWaitTdlibParameters" {
+                    Button("К выбору аккаунта") { tdlib.disconnectToAccounts() }
+                        .frame(minHeight: 44)
+                }
             }
         }
         .padding(18)
@@ -127,7 +152,9 @@ struct LoginView: View {
 
     private var connectionForm: some View {
         VStack(spacing: 12) {
-            if editingIdentity || !tdlib.hasConfiguredIdentity {
+            if tdlib.catalogUnavailable {
+                primaryButton("Повторить чтение аккаунтов", loading: false) { tdlib.reloadAccounts() }
+            } else if editingIdentity || tdlib.profiles.isEmpty {
                 Text("Whogram не использует общий API ID. Введите данные своего приложения Telegram; они хранятся только в связке ключей этого iPhone.")
                     .font(theme.smallFont)
                     .foregroundStyle(theme.textSecondary)
@@ -146,10 +173,13 @@ struct LoginView: View {
                     .accessibilityLabel("API Hash приложения Telegram")
                     .padding(12)
                     .background(theme.field, in: RoundedRectangle(cornerRadius: 12))
-                primaryButton("Сохранить и подключиться", loading: false) { confirmConnection = true }
+                primaryButton("Сохранить и подключиться", loading: false) {
+                    requestedProfile = nil
+                    confirmConnection = true
+                }
                     .disabled(apiID.isEmpty || apiHash.isEmpty)
-                if tdlib.hasConfiguredIdentity {
-                    Button("Использовать сохранённые данные") {
+                if !tdlib.profiles.isEmpty {
+                    Button("Назад к аккаунтам") {
                         apiID = ""
                         apiHash = ""
                         editingIdentity = false
@@ -157,8 +187,28 @@ struct LoginView: View {
                     .frame(minHeight: 44)
                 }
             } else {
-                primaryButton("Подключить Whogram", loading: false) { confirmConnection = true }
-                Button("Изменить API ID и Hash") { editingIdentity = true }
+                Text("Выберите аккаунт").font(theme.font(16, weight: .semibold))
+                ForEach(tdlib.profiles) { profile in
+                    Button {
+                        requestedProfile = profile.id
+                        confirmConnection = true
+                    } label: {
+                        HStack {
+                            Image(systemName: profile.wasAuthorized ? "person.crop.circle.fill" : "person.crop.circle")
+                            Text(profile.title).lineLimit(1)
+                            Spacer()
+                            if profile.id == tdlib.selectedProfileID {
+                                Image(systemName: "checkmark").accessibilityLabel("Последний выбранный")
+                            }
+                            Image(systemName: "chevron.right").accessibilityHidden(true)
+                        }
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    Divider()
+                }
+                Button("Добавить аккаунт") { editingIdentity = true }
                     .frame(minHeight: 44)
             }
         }
@@ -166,6 +216,19 @@ struct LoginView: View {
 
     @ViewBuilder
     private var authenticationForm: some View {
+        if tdlib.sessionSecurityCode != nil {
+            Text("Вход приостановлен. Проверьте сеансы в официальном Telegram. Не запрашивайте код повторно.")
+                .font(theme.smallFont)
+        } else if tdlib.requiresReauthentication && tdlib.authorizationState == "authorizationStateWaitPhoneNumber" {
+            Button("Начать новую авторизацию…") { confirmReauthentication = true }
+                .frame(minHeight: 44)
+        } else {
+            authenticationStep
+        }
+    }
+
+    @ViewBuilder
+    private var authenticationStep: some View {
         switch tdlib.authorizationState {
             case "authorizationStateWaitPhoneNumber":
                 inputField("Номер телефона", text: $viewModel.phone, keyboard: .phonePad)
@@ -241,8 +304,6 @@ struct LoginView: View {
                     ProgressView().tint(theme.accent.main)
                 } else {
                     primaryButton("Повторить подключение", loading: false) { tdlib.retrySession() }
-                    Button("Отключиться и изменить данные") { tdlib.disconnectForConfiguration() }
-                        .frame(minHeight: 44)
                 }
 
             default:

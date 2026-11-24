@@ -122,7 +122,8 @@ enum ChatDensity: String, Codable, CaseIterable, Identifiable {
 }
 
 enum ThemePreset: String, CaseIterable, Codable, Identifiable {
-    case neonPulse, liquidGlass, oled, aurora, cyberpunk, minimal, telegram, custom
+    case telegramLight, neonPulse, liquidGlass, oled, aurora, cyberpunk, minimal, telegram, custom
+    static let firstLaunch: Self = .telegramLight
 
     var id: String { rawValue }
 
@@ -134,6 +135,7 @@ enum ThemePreset: String, CaseIterable, Codable, Identifiable {
         case .aurora: return "Aurora"
         case .cyberpunk: return "Cyberpunk"
         case .minimal: return "Minimal"
+        case .telegramLight: return "Telegram Classic · Светлая"
         case .telegram: return "Telegram Classic"
         case .custom: return "Custom"
         }
@@ -147,7 +149,7 @@ enum ThemePreset: String, CaseIterable, Codable, Identifiable {
         case .aurora: return "waveform.path"
         case .cyberpunk: return "cpu"
         case .minimal: return "circle.lefthalf.filled"
-        case .telegram: return "paperplane.fill"
+        case .telegramLight, .telegram: return "paperplane.fill"
         case .custom: return "slider.horizontal.3"
         }
     }
@@ -175,6 +177,15 @@ enum ThemePreset: String, CaseIterable, Codable, Identifiable {
         case .telegram:
             return .init(0x17212B, 0x202B36, 0xE8EFF5, 0xFFFFFF, 0x86D1FF, 0x57B7F1,
                          appearance: .system, wallpaper: .ocean, bubble: .classic, surface: .flat, radius: 14, glow: 0)
+        case .telegramLight:
+            var result = ThemeProfile(0x101C29, 0x212E3C, 0xFFFFFF, 0xFFFFFF, 0x167DC3, 0x126EAD,
+                                      appearance: .light, wallpaper: .plain, bubble: .classic,
+                                      surface: .flat, radius: 16, glow: 0)
+            result.outgoingStart = 0xD5EEFF
+            result.outgoingEnd = 0xC3E8FF
+            result.incomingColor = 0xF1F4F7
+            result.showChatDividers = true
+            return result
         }
     }
 }
