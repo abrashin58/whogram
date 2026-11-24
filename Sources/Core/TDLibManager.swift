@@ -33,6 +33,7 @@ final class TDLibManager: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var statusMessage = "Whogram не подключён к Telegram."
+    @Published private(set) var networkNotice: String?
     @Published private var startupGate = SessionStartupGate()
     var needsConnectionApproval: Bool { startupGate.needsApproval }
     var profiles: [SessionProfile] { catalog.profiles }
@@ -48,11 +49,13 @@ final class TDLibManager: ObservableObject {
 
     // Данные
     @Published var chats: [RealChat] = []
+    var mainChats: [RealChat] { chats.filter(\.isInMainList) }
     @Published var messages: [Int64: [RealMessage]] = [:]
     @Published var users: [Int64: RealUser] = [:]
     @Published var me: RealUser?
     @Published var myBio = ""
     @Published private(set) var isLoadingChats = false
+    @Published private(set) var hasMoreChats = true
     @Published private(set) var loadingHistory: Set<Int64> = []
     @Published private(set) var exhaustedHistory: Set<Int64> = []
     @Published private(set) var historyErrors: [Int64: String] = [:]
@@ -142,6 +145,7 @@ final class TDLibManager: ObservableObject {
         acknowledgedLocalLogout = false
         closeRequested = false
         requiresReauthentication = false
+        networkNotice = nil
         sessionSecurityCode = nil
         sessionEnding = false
         initializingDatabase = false
@@ -171,9 +175,11 @@ final class TDLibManager: ObservableObject {
     func disconnectToAccounts() {
         guard client != nil, !sessionEnding, !closeRequested, !requestedLocalLogout else { return }
         closeRequested = true
+        statusMessage = "Сохраняем сеанс и закрываем соединение…"
         request(["@type": "close"], scope: .disconnect) { [weak self] result in
             if case let .failure(error) = result {
                 self?.closeRequested = false
+                self?.statusMessage = "Не удалось закрыть соединение"
                 self?.errorMessage = error.localizedDescription
             }
         }
@@ -268,21 +274,22 @@ final class TDLibManager: ObservableObject {
             }
 
         case "updateConnectionState":
-            guard isAuthorized, !sessionEnding,
+            guard !sessionEnding, !closeRequested, !requestedLocalLogout,
                   let state = json["state"] as? [String: Any] else { return }
+            let recovered = networkNotice != nil
             switch state["@type"] as? String {
-            case "connectionStateWaitingForNetwork": statusMessage = "Ожидание сети…"
-            case "connectionStateConnecting", "connectionStateConnectingToProxy": statusMessage = "Подключение…"
-            case "connectionStateUpdating": statusMessage = "Синхронизация…"
-            case "connectionStateReady":
-                let recovered = statusMessage != "Подключено"
-                statusMessage = "Подключено"
-                if recovered {
-                    for id in openChats where messages[id]?.isEmpty != false {
-                        refreshHistory(chatID: id)
-                    }
-                }
+            case "connectionStateWaitingForNetwork": networkNotice = "Ожидание сети…"
+            case "connectionStateConnecting", "connectionStateConnectingToProxy": networkNotice = "Подключение…"
+            case "connectionStateUpdating": networkNotice = "Синхронизация…"
+            case "connectionStateReady": networkNotice = nil
             default: break
+            }
+            guard isAuthorized else { return }
+            statusMessage = networkNotice ?? "Подключено"
+            if recovered && networkNotice == nil {
+                for id in openChats where messages[id]?.isEmpty != false {
+                    refreshHistory(chatID: id)
+                }
             }
 
         case "updateNewChat":
@@ -293,33 +300,38 @@ final class TDLibManager: ObservableObject {
         case "updateChatLastMessage":
             guard let id = int64(json["chat_id"]),
                   let index = chats.firstIndex(where: { $0.id == id }) else { return }
+            var chat = chats[index]
             if let last = json["last_message"] as? [String: Any] {
-                chats[index].lastMessageText = previewText(last)
-                chats[index].lastMessageDate = int(last["date"]) ?? 0
-                chats[index].lastMessageID = int64(last["id"]) ?? 0
-                chats[index].lastMessageSenderID = senderUserID(last["sender_id"])
+                chat.lastMessageText = previewText(last)
+                chat.lastMessageDate = int(last["date"]) ?? 0
+                chat.lastMessageID = int64(last["id"]) ?? 0
+                chat.lastMessageSenderID = senderUserID(last["sender_id"])
             } else {
-                chats[index].lastMessageText = ""
-                chats[index].lastMessageDate = 0
-                chats[index].lastMessageID = 0
-                chats[index].lastMessageSenderID = nil
+                chat.lastMessageText = ""
+                chat.lastMessageDate = 0
+                chat.lastMessageID = 0
+                chat.lastMessageSenderID = nil
             }
+            applyMainListSnapshot(json["positions"], to: &chat)
+            chats[index] = chat
+            sortChats()
+
+        case "updateChatDraftMessage":
+            guard let id = int64(json["chat_id"]),
+                  let index = chats.firstIndex(where: { $0.id == id }) else { return }
+            var chat = chats[index]
+            applyMainListSnapshot(json["positions"], to: &chat)
+            chats[index] = chat
             sortChats()
 
         case "updateChatPosition":
             guard let id = int64(json["chat_id"]),
-                  let position = json["position"] as? [String: Any] else { return }
-            let list = position["list"] as? [String: Any]
-            guard (list?["@type"] as? String) == "chatListMain" else { return }
-            let order = int64(position["order"]) ?? 0
-            if order == 0 {
-                chats.removeAll { $0.id == id }
-                return
-            }
-            if let index = chats.firstIndex(where: { $0.id == id }) {
-                chats[index].isPinned = bool(position["is_pinned"]) ?? false
-                sortChats()
-            }
+                  let index = chats.firstIndex(where: { $0.id == id }),
+                  let position = json["position"] as? [String: Any], isMainList(position["list"]) else { return }
+            var chat = chats[index]
+            applyMainListPosition(position, to: &chat)
+            chats[index] = chat
+            sortChats()
 
         case "updateChatTitle":
             guard let id = int64(json["chat_id"]),
@@ -329,10 +341,10 @@ final class TDLibManager: ObservableObject {
 
         case "updateChatPhoto":
             guard let id = int64(json["chat_id"]),
-                  let photo = json["photo"] as? [String: Any],
                   let index = chats.firstIndex(where: { $0.id == id }) else { return }
-            chats[index].photoFileID = fileID(photo["small"]) ?? fileID(photo["big"])
-            chats[index].photoPreview = mini(photo["minithumbnail"])
+            let photo = json["photo"] as? [String: Any]
+            chats[index].photoFileID = fileID(photo?["small"]) ?? fileID(photo?["big"])
+            chats[index].photoPreview = mini(photo?["minithumbnail"])
 
         case "updateChatReadInbox":
             guard let id = int64(json["chat_id"]),
@@ -549,7 +561,7 @@ final class TDLibManager: ObservableObject {
             isAuthorized = true
             isLoading = false
             errorMessage = nil
-            statusMessage = "Подключено"
+            statusMessage = networkNotice ?? "Подключено"
             rememberAuthorization()
             loadChats()
             loadMe()
@@ -629,6 +641,7 @@ final class TDLibManager: ObservableObject {
         historyErrors = [:]
         openChats = []
         isLoadingChats = false
+        hasMoreChats = true
         ImageCache.shared.clear()
     }
 
@@ -734,7 +747,7 @@ final class TDLibManager: ObservableObject {
     // MARK: - Загрузка данных
 
     func loadChats() {
-        guard !isLoadingChats else { return }
+        guard isSessionReady, !isLoadingChats, hasMoreChats else { return }
         isLoadingChats = true
         request([
             "@type": "loadChats",
@@ -743,8 +756,9 @@ final class TDLibManager: ObservableObject {
         ]) { [weak self] result in
             guard let self, self.isAuthorized else { return }
             self.isLoadingChats = false
-            if case let .failure(error) = result, (error as? TDRequestError)?.code != 404 {
-                self.errorMessage = error.localizedDescription
+            if case let .failure(error) = result {
+                if (error as? TDRequestError)?.code == 404 { self.hasMoreChats = false }
+                else { self.errorMessage = error.localizedDescription }
             }
         }
     }
@@ -860,6 +874,9 @@ final class TDLibManager: ObservableObject {
     }
 
     func markAsRead(_ chat: RealChat) {
+        if chat.isMarkedAsUnread {
+            send(["@type": "toggleChatIsMarkedAsUnread", "chat_id": chat.id, "is_marked_as_unread": false])
+        }
         var lastID = chat.lastMessageID
         if let loaded = messages[chat.id]?.last?.id, loaded > lastID {
             lastID = loaded
@@ -1405,14 +1422,7 @@ final class TDLibManager: ObservableObject {
             chat.isMuted = isMuted(settings)
         }
 
-        if let positions = json["positions"] as? [[String: Any]] {
-            for position in positions {
-                let list = position["list"] as? [String: Any]
-                if (list?["@type"] as? String) == "chatListMain" {
-                    chat.isPinned = bool(position["is_pinned"]) ?? chat.isPinned
-                }
-            }
-        }
+        applyMainListSnapshot(json["positions"], to: &chat)
 
         if let index = chats.firstIndex(where: { $0.id == id }) {
             chats[index] = chat
@@ -1422,12 +1432,22 @@ final class TDLibManager: ObservableObject {
         sortChats()
     }
 
+    private func isMainList(_ value: Any?) -> Bool {
+        ((value as? [String: Any])?["@type"] as? String) == "chatListMain"
+    }
+
+    private func applyMainListSnapshot(_ value: Any?, to chat: inout RealChat) {
+        guard let positions = value as? [[String: Any]] else { return }
+        applyMainListPosition(positions.first { isMainList($0["list"]) }, to: &chat)
+    }
+
+    private func applyMainListPosition(_ position: [String: Any]?, to chat: inout RealChat) {
+        chat.mainListOrder = int64(position?["order"]) ?? 0
+        chat.isPinned = chat.isInMainList && (bool(position?["is_pinned"]) ?? false)
+    }
+
     private func sortChats() {
-        chats.sort { lhs, rhs in
-            if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
-            if lhs.lastMessageDate != rhs.lastMessageDate { return lhs.lastMessageDate > rhs.lastMessageDate }
-            return lhs.id > rhs.id
-        }
+        chats.sort(by: RealChat.precedes)
     }
 
     private func isMuted(_ settings: [String: Any]) -> Bool {

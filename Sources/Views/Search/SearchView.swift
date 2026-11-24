@@ -14,7 +14,7 @@ struct SearchView: View {
     }
 
     private var results: [RealChat] {
-        guard !trimmedQuery.isEmpty else { return tdlib.chats }
+        guard !trimmedQuery.isEmpty else { return tdlib.mainChats }
 
         var merged: [RealChat] = []
         var seen = Set<Int64>()

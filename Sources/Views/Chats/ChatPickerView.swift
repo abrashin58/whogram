@@ -11,7 +11,7 @@ struct ChatPickerView: View {
     @State private var query = ""
 
     private var chats: [RealChat] {
-        guard !query.isEmpty else { return tdlib.chats }
+        guard !query.isEmpty else { return tdlib.mainChats }
         return tdlib.chats.filter { $0.title.localizedCaseInsensitiveContains(query) }
     }
 

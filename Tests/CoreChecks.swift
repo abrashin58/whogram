@@ -8,6 +8,7 @@ struct CoreChecks {
         try checkSessionFolders()
         try checkSessionSafety()
         try checkAccountCatalog()
+        checkChatOrder()
         checkHistory()
         print("OK: темы, HEX, изоляция сессии, разрешения TDLib, курсор истории, звуковая волна")
     }
@@ -190,5 +191,23 @@ struct CoreChecks {
         precondition(HistoryPage.progress(ids: [71, 70, 60], from: 70) == .older(60))
         precondition(HistoryPage.progress(ids: [71, 70], from: 70) == .end)
         precondition(HistoryPage.progress(ids: [], from: 0) == .end)
+    }
+
+    static func checkChatOrder() {
+        var newest = RealChat(id: 1, title: "Newest")
+        newest.lastMessageDate = 300
+        newest.mainListOrder = 50
+        var earlier = RealChat(id: 2, title: "First pinned")
+        earlier.lastMessageDate = 5
+        earlier.mainListOrder = Int64.max - 1
+        earlier.isPinned = true
+        var later = RealChat(id: 3, title: "Second pinned")
+        later.lastMessageDate = 100
+        later.mainListOrder = Int64.max - 2
+        later.isPinned = true
+        let archived = RealChat(id: 4, title: "Archived")
+        let all = [newest, later, archived, earlier].sorted(by: RealChat.precedes)
+        precondition(all.map(\.id) == [2, 3, 1, 4])
+        precondition(all.filter(\.isInMainList).map(\.id) == [2, 3, 1])
     }
 }

@@ -195,6 +195,7 @@ struct RealChat: Identifiable, Equatable {
     var isPrivate: Bool = false
     var isVerified: Bool = false
     var isPinned: Bool = false
+    var mainListOrder: Int64 = 0
     var isMuted: Bool = false
     var isMarkedAsUnread: Bool = false
     var photoFileID: Int32?
@@ -206,6 +207,14 @@ struct RealChat: Identifiable, Equatable {
     var onlineCount: Int = 0
     var lastReadOutboxMessageID: Int64 = 0
     var lastReadInboxMessageID: Int64 = 0
+
+    var isInMainList: Bool { mainListOrder > 0 }
+
+    static func precedes(_ lhs: Self, _ rhs: Self) -> Bool {
+        if lhs.mainListOrder != rhs.mainListOrder { return lhs.mainListOrder > rhs.mainListOrder }
+        if lhs.lastMessageDate != rhs.lastMessageDate { return lhs.lastMessageDate > rhs.lastMessageDate }
+        return lhs.id > rhs.id
+    }
 
     var time: String {
         DateFormatters.chatListTime(lastMessageDate)

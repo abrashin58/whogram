@@ -44,14 +44,14 @@ struct ChatListView: View {
     @State private var showClearConfirm = false
 
     private var filteredChats: [RealChat] {
-        tdlib.chats.filter { chat in
+        tdlib.mainChats.filter { chat in
             folder.matches(chat) &&
             (searchText.isEmpty || chat.title.localizedCaseInsensitiveContains(searchText))
         }
     }
 
     private var totalUnread: Int {
-        tdlib.chats.reduce(0) { result, chat in
+        tdlib.mainChats.reduce(0) { result, chat in
             result + (chat.isMuted ? 0 : chat.unreadCount)
         }
     }
@@ -66,7 +66,7 @@ struct ChatListView: View {
                     searchField
                     folderBar
 
-                    if tdlib.isLoadingChats && tdlib.chats.isEmpty {
+                    if tdlib.isLoadingChats && tdlib.mainChats.isEmpty {
                         ScrollView { ChatSkeleton(count: 6).padding(14) }
                     } else if filteredChats.isEmpty {
                         emptyState
@@ -143,10 +143,10 @@ struct ChatListView: View {
         if totalUnread > 0 {
             return "\(totalUnread) \(unreadWord(totalUnread))"
         }
-        if tdlib.isLoadingChats && tdlib.chats.isEmpty {
+        if tdlib.isLoadingChats && tdlib.mainChats.isEmpty {
             return "Загрузка чатов…"
         }
-        if tdlib.chats.isEmpty { return "Telegram" }
+        if tdlib.mainChats.isEmpty { return "Telegram" }
         return "Все сообщения прочитаны"
     }
 
@@ -249,7 +249,7 @@ struct ChatListView: View {
     }
 
     private func unreadCount(for item: ChatFolder) -> Int {
-        tdlib.chats
+        tdlib.mainChats
             .filter { item.matches($0) && !$0.isMuted }
             .reduce(0) { $0 + $1.unreadCount }
     }
@@ -299,6 +299,14 @@ struct ChatListView: View {
                         }
                     }
                 }
+                if folder == .all && searchText.isEmpty && tdlib.hasMoreChats {
+                    if tdlib.isLoadingChats {
+                        ProgressView().padding(14)
+                    } else {
+                        Button("Загрузить ещё чаты") { tdlib.loadChats() }
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                }
             }
             .padding(.bottom, 12)
         }
@@ -314,7 +322,7 @@ struct ChatListView: View {
                             title: searchText.isEmpty ? "Нет чатов" : "Нет результатов",
                             detail: emptyText)
 
-            if tdlib.chats.isEmpty {
+            if tdlib.mainChats.isEmpty && tdlib.hasMoreChats {
                 Button {
                     tdlib.loadChats()
                 } label: {
@@ -335,13 +343,13 @@ struct ChatListView: View {
     }
 
     private var emptyText: String {
-        if tdlib.chats.isEmpty {
+        if tdlib.mainChats.isEmpty {
             return "Список чатов пуст.\nЕсли это длится долго — проверьте подключение."
         }
         if !searchText.isEmpty {
             return "По запросу «\(searchText)» ничего не найдено."
         }
-        return "В этой папке пока нет чатов."
+        return folder == .unread ? "Все загруженные чаты прочитаны." : "В этой папке пока нет чатов."
     }
 
     private func preview(for chat: RealChat) -> String {

@@ -11,6 +11,7 @@ swiftc \
   Sources/Core/SessionSafety.swift \
   Sources/Core/HistoryPage.swift \
   Sources/Core/Media/VoiceWaveform.swift \
+  Sources/Models/AppModels.swift \
   Tests/CoreChecks.swift \
   -o "$build_dir/whogram-core-checks"
 "$build_dir/whogram-core-checks"

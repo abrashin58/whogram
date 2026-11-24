@@ -37,7 +37,7 @@ struct MainTabView: View {
     }
 
     private var totalUnread: Int {
-        tdlib.chats.reduce(0) { $0 + ($1.isMuted ? 0 : $1.unreadCount) }
+        tdlib.mainChats.reduce(0) { $0 + ($1.isMuted ? 0 : $1.unreadCount) }
     }
 
     var body: some View {
@@ -90,6 +90,12 @@ struct MainTabView: View {
                 .transition(.move(edge: .top).combined(with: .opacity))
             } else if !tdlib.isSessionReady {
                 Label(tdlib.statusMessage, systemImage: "arrow.trianglehead.clockwise")
+                    .font(theme.smallFont)
+                    .padding(8)
+                    .background(theme.card, in: Capsule())
+                    .allowsHitTesting(false)
+            } else if let notice = tdlib.networkNotice {
+                Label(notice, systemImage: "antenna.radiowaves.left.and.right")
                     .font(theme.smallFont)
                     .padding(8)
                     .background(theme.card, in: Capsule())
