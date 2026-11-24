@@ -1,6 +1,8 @@
 import Combine
 import Foundation
-import TDLibKit
+import class TDLibKit.TdClientImpl
+import protocol TDLibKit.TdClient
+import protocol TDLibKit.TdQuery
 
 private struct TDRequestError: LocalizedError {
     let code: Int
