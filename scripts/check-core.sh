@@ -8,6 +8,7 @@ trap 'rm -rf "$build_dir"' EXIT
 swiftc \
   Sources/Core/Theme/ThemeProfile.swift \
   Sources/Core/SessionFolders.swift \
+  Sources/Core/SessionSafety.swift \
   Sources/Core/HistoryPage.swift \
   Sources/Core/Media/VoiceWaveform.swift \
   Tests/CoreChecks.swift \

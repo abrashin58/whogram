@@ -84,7 +84,7 @@ struct SettingsView: View {
                                 HStack {
                                     Image(systemName: "rectangle.portrait.and.arrow.right")
                                         .font(.system(size: 14, weight: .semibold))
-                                    Text("Выйти из аккаунта")
+                                    Text("Выйти только из Whogram")
                                         .font(theme.font(14, weight: .semibold))
                                     Spacer()
                                 }
@@ -116,13 +116,13 @@ struct SettingsView: View {
             .sheet(isPresented: $showProfileEditor) {
                 EditProfileView()
             }
-            .alert("Выйти из аккаунта?", isPresented: $showLogout) {
+            .alert("Выйти только из Whogram?", isPresented: $showLogout) {
                 Button("Отмена", role: .cancel) { }
                 Button("Выйти", role: .destructive) {
                     tdlib.logOut()
                 }
             } message: {
-                Text("Придётся снова ввести номер телефона и код из Telegram.")
+                Text("Завершится текущий сеанс Whogram. Приложение не отправляет команды выхода на других устройствах.")
             }
         }
     }

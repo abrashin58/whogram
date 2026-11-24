@@ -8,6 +8,10 @@ struct LoginView: View {
     @StateObject private var viewModel = AuthViewModel()
 
     @State private var appeared = false
+    @State private var editingIdentity = false
+    @State private var apiID = ""
+    @State private var apiHash = ""
+    @State private var confirmConnection = false
 
     var body: some View {
         ZStack {
@@ -19,6 +23,12 @@ struct LoginView: View {
                     logo
                     titleBlock
                     statusBlock
+                    if let code = tdlib.sessionSecurityCode {
+                        Text("Код диагностики: \(code)")
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(theme.textSecondary)
+                            .textSelection(.enabled)
+                    }
                     formBlock
                     Spacer(minLength: 30)
                 }
@@ -30,6 +40,22 @@ struct LoginView: View {
             withAnimation(theme.animation(.spring(response: 0.55, dampingFraction: 0.82), reduced: reduceMotion)) {
                 appeared = true
             }
+        }
+        .alert("Подключиться к Telegram?", isPresented: $confirmConnection) {
+            Button("Отмена", role: .cancel) {}
+            Button("Подключиться") {
+                if editingIdentity || !tdlib.hasConfiguredIdentity {
+                    if tdlib.connectWithNewIdentity(id: apiID, hash: apiHash) {
+                        apiID = ""
+                        apiHash = ""
+                        editingIdentity = false
+                    }
+                } else {
+                    tdlib.connectUsingSavedIdentity()
+                }
+            }
+        } message: {
+            Text("После отзыва сеансов не проверяйте вход на основном аккаунте. Сначала используйте отдельный тестовый аккаунт.")
         }
     }
 
@@ -87,7 +113,60 @@ struct LoginView: View {
     @ViewBuilder
     private var formBlock: some View {
         VStack(spacing: 12) {
-            switch tdlib.authorizationState {
+            if tdlib.needsConnectionApproval {
+                connectionForm
+            } else {
+                authenticationForm
+            }
+        }
+        .padding(18)
+        .liquidGlass(corner: theme.radius)
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared ? 0 : 14)
+    }
+
+    private var connectionForm: some View {
+        VStack(spacing: 12) {
+            if editingIdentity || !tdlib.hasConfiguredIdentity {
+                Text("Whogram не использует общий API ID. Введите данные своего приложения Telegram; они хранятся только в связке ключей этого iPhone.")
+                    .font(theme.smallFont)
+                    .foregroundStyle(theme.textSecondary)
+                    .multilineTextAlignment(.center)
+                Link("Открыть my.telegram.org", destination: URL(string: "https://my.telegram.org")!)
+                    .frame(minHeight: 44)
+                TextField("API ID", text: $apiID)
+                    .keyboardType(.numberPad)
+                    .textContentType(nil)
+                    .accessibilityLabel("API ID приложения Telegram")
+                    .padding(12)
+                    .background(theme.field, in: RoundedRectangle(cornerRadius: 12))
+                SecureField("API Hash", text: $apiHash)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .accessibilityLabel("API Hash приложения Telegram")
+                    .padding(12)
+                    .background(theme.field, in: RoundedRectangle(cornerRadius: 12))
+                primaryButton("Сохранить и подключиться", loading: false) { confirmConnection = true }
+                    .disabled(apiID.isEmpty || apiHash.isEmpty)
+                if tdlib.hasConfiguredIdentity {
+                    Button("Использовать сохранённые данные") {
+                        apiID = ""
+                        apiHash = ""
+                        editingIdentity = false
+                    }
+                    .frame(minHeight: 44)
+                }
+            } else {
+                primaryButton("Подключить Whogram", loading: false) { confirmConnection = true }
+                Button("Изменить API ID и Hash") { editingIdentity = true }
+                    .frame(minHeight: 44)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var authenticationForm: some View {
+        switch tdlib.authorizationState {
             case "authorizationStateWaitPhoneNumber":
                 inputField("Номер телефона", text: $viewModel.phone, keyboard: .phonePad)
 
@@ -162,16 +241,13 @@ struct LoginView: View {
                     ProgressView().tint(theme.accent.main)
                 } else {
                     primaryButton("Повторить подключение", loading: false) { tdlib.retrySession() }
+                    Button("Отключиться и изменить данные") { tdlib.disconnectForConfiguration() }
+                        .frame(minHeight: 44)
                 }
 
             default:
                 if tdlib.isLoading { ProgressView().tint(theme.accent.main) }
-            }
         }
-        .padding(18)
-        .liquidGlass(corner: theme.radius)
-        .opacity(appeared ? 1 : 0)
-        .offset(y: appeared ? 0 : 14)
     }
 
     private func inputField(

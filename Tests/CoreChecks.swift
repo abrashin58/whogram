@@ -6,8 +6,9 @@ struct CoreChecks {
         checkVoiceWaveform()
         try checkThemes()
         try checkSessionFolders()
+        try checkSessionSafety()
         checkHistory()
-        print("OK: темы, HEX, хранилище сессии, курсор истории, звуковая волна")
+        print("OK: темы, HEX, изоляция сессии, разрешения TDLib, курсор истории, звуковая волна")
     }
 
     static func checkVoiceWaveform() {
@@ -79,23 +80,69 @@ struct CoreChecks {
 
     static func checkSessionFolders() throws {
         let fm = FileManager.default
-        let documents = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? fm.removeItem(at: documents) }
-        let first = try SessionFolders.prepare(documents: documents)
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        let legacy = root.appendingPathComponent("Documents/Whogram/Database", isDirectory: true)
+        try fm.createDirectory(at: legacy, withIntermediateDirectories: true)
+        let legacyMarker = legacy.appendingPathComponent("td.binlog")
+        let legacyData = Data([99])
+        try legacyData.write(to: legacyMarker)
+        let support = root.appendingPathComponent("Application Support", isDirectory: true)
+        let storageID = UUID()
+        let first = try SessionFolders.prepare(storageID: storageID, applicationSupport: support)
         let marker = first.database.appendingPathComponent("existing")
         let data = Data([7, 18])
         try data.write(to: marker)
-        let second = try SessionFolders.prepare(documents: documents)
+        let second = try SessionFolders.prepare(storageID: storageID, applicationSupport: support)
         precondition(first.database == second.database && first.files == second.files)
-        precondition(second.database.path.hasSuffix("/Whogram/Database") && second.files.path.hasSuffix("/Whogram/Files"))
+        precondition(second.database.path.hasSuffix("/WhogramSessions/\(storageID.uuidString)/Database"))
+        let different = try SessionFolders.prepare(storageID: UUID(), applicationSupport: support)
+        precondition(different.database != second.database)
         let persisted = try Data(contentsOf: marker)
         precondition(persisted == data)
+        let legacyPersisted = try Data(contentsOf: legacyMarker)
+        precondition(legacyPersisted == legacyData)
+        precondition(!fm.fileExists(atPath: first.database.appendingPathComponent("td.binlog").path))
         do {
-            _ = try SessionFolders.prepare(documents: marker)
+            _ = try SessionFolders.prepare(storageID: storageID, applicationSupport: marker)
             preconditionFailure("Ожидалась ошибка создания каталога")
         } catch {
             precondition(fm.fileExists(atPath: marker.path))
         }
+    }
+
+    static func checkSessionSafety() throws {
+        let hash = String(repeating: "AB", count: 16)
+        precondition((try? TelegramAppIdentity(id: "", hash: hash)) == nil)
+        precondition((try? TelegramAppIdentity(id: "2086616", hash: hash)) == nil)
+        precondition((try? TelegramAppIdentity(id: "93451234", hash: "abcd")) == nil)
+        let configured = try TelegramAppIdentity(id: " 93451234 ", hash: hash)
+        let roundTrip = try JSONDecoder().decode(TelegramAppIdentity.self, from: JSONEncoder().encode(configured))
+        precondition(configured == roundTrip && roundTrip.apiHash == hash.lowercased())
+        var gate = SessionStartupGate()
+        precondition(gate.needsApproval && !gate.approve(hasIdentity: false))
+        precondition(gate.approve(hasIdentity: true) && !gate.approve(hasIdentity: true))
+        gate.didClose()
+        precondition(gate.needsApproval)
+
+        for method in ["terminateSession", "terminateAllOtherSessions", "terminateAllWebAppSessions",
+                       "deleteAccount", "destroy", "setInactiveSessionTtl"] {
+            for scope in [SessionRequestPolicy.Scope.ordinary, .bootstrap, .authentication, .confirmedLocalLogout, .disconnect] {
+                precondition(!SessionRequestPolicy.allows(method, scope: scope))
+            }
+        }
+        precondition(SessionRequestPolicy.allows("logOut", scope: .confirmedLocalLogout))
+        precondition(!SessionRequestPolicy.allows("logOut", scope: .ordinary))
+        precondition(SessionRequestPolicy.allows("close", scope: .disconnect))
+        precondition(!SessionRequestPolicy.allows("close", scope: .ordinary))
+        precondition(SessionRequestPolicy.allows("getMe", scope: .ordinary))
+        precondition(SessionRequestPolicy.allows("setTdlibParameters", scope: .bootstrap))
+        precondition(!SessionRequestPolicy.allows("setTdlibParameters", scope: .ordinary))
+        precondition(SessionRequestPolicy.allows("checkAuthenticationCode", scope: .authentication))
+        precondition(!SessionRequestPolicy.allows("checkAuthenticationCode", scope: .ordinary))
+        precondition(SessionRequestPolicy.securityCode(in: "401: SESSION_REVOKED") == "SESSION_REVOKED")
+        precondition(SessionRequestPolicy.securityCode(in: "CONNECTION_API_ID_INVALID") == "CONNECTION_API_ID_INVALID")
+        precondition(SessionRequestPolicy.securityCode(in: "unrecognized 123456") == nil)
     }
 
     static func checkHistory() {

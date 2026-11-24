@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import UIKit
 import class TDLibKit.TDLibClient
 import class TDLibKit.TDLibClientManager
 import protocol TDLibKit.TdQuery
@@ -13,9 +14,10 @@ private struct TDRequestError: LocalizedError {
 final class TDLibManager: ObservableObject {
     static let shared = TDLibManager()
 
-    private let transport = TDLibClientManager()
+    private lazy var transport = TDLibClientManager()
     private var client: TDLibClient?
-    private var reconnectOnClose = true
+    private var identity: TelegramAppIdentity?
+    private var requestedLocalLogout = false
     private var initializingDatabase = false
     private var sessionEnding = false
     private var openChats: Set<Int64> = []
@@ -24,9 +26,13 @@ final class TDLibManager: ObservableObject {
     // Авторизация
     @Published var authorizationState = "authorizationStateWaitTdlibParameters"
     @Published var isAuthorized = false
-    @Published var isLoading = true
+    @Published var isLoading = false
     @Published var errorMessage: String?
-    @Published var statusMessage = "Инициализация…"
+    @Published var statusMessage = "Whogram не подключён к Telegram."
+    @Published private var startupGate = SessionStartupGate()
+    var needsConnectionApproval: Bool { startupGate.needsApproval }
+    @Published private(set) var hasConfiguredIdentity = false
+    @Published private(set) var sessionSecurityCode: String?
     @Published var authCodePhone: String?
     @Published var authCodeLength: Int = 0
     @Published var passwordHint: String?
@@ -62,11 +68,50 @@ final class TDLibManager: ObservableObject {
     private var messageSearchTicket = UUID()
 
     private init() {
+        do {
+            identity = try TelegramIdentityStore.load()
+            hasConfiguredIdentity = identity != nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func connectUsingSavedIdentity() {
+        guard client == nil, needsConnectionApproval else { return }
+        if identity == nil {
+            do {
+                identity = try TelegramIdentityStore.load()
+                hasConfiguredIdentity = identity != nil
+            } catch {
+                errorMessage = error.localizedDescription
+                return
+            }
+        }
         startClient()
     }
 
+    @discardableResult
+    func connectWithNewIdentity(id: String, hash: String) -> Bool {
+        guard client == nil, needsConnectionApproval else { return false }
+        do {
+            let proposed = try TelegramAppIdentity(id: id, hash: hash)
+            if identity?.apiID != proposed.apiID || identity?.apiHash != proposed.apiHash {
+                try TelegramIdentityStore.save(proposed)
+                identity = proposed
+            }
+            hasConfiguredIdentity = true
+            startClient()
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
     private func startClient() {
-        guard client == nil else { return }
+        guard client == nil, startupGate.approve(hasIdentity: identity != nil) else { return }
+        requestedLocalLogout = false
+        sessionSecurityCode = nil
         sessionEnding = false
         initializingDatabase = false
         loadingHistory = []
@@ -87,10 +132,15 @@ final class TDLibManager: ObservableObject {
     }
 
     func retrySession() {
-        if client == nil {
-            startClient()
-        } else if authorizationState == "authorizationStateWaitTdlibParameters" {
+        if client != nil, !needsConnectionApproval, authorizationState == "authorizationStateWaitTdlibParameters" {
             setParameters()
+        }
+    }
+
+    func disconnectForConfiguration() {
+        guard client != nil, !sessionEnding else { return }
+        request(["@type": "close"], scope: .disconnect) { [weak self] result in
+            if case let .failure(error) = result { self?.errorMessage = error.localizedDescription }
         }
     }
 
@@ -106,8 +156,9 @@ final class TDLibManager: ObservableObject {
         }
     }
 
-    func send(_ object: [String: Any]) {
-        guard JSONSerialization.isValidJSONObject(object) else {
+    private func send(_ object: [String: Any]) {
+        guard SessionRequestPolicy.allows(object["@type"] as? String, scope: .ordinary),
+              JSONSerialization.isValidJSONObject(object) else {
             errorMessage = "Ошибка формирования запроса"
             return
         }
@@ -121,14 +172,16 @@ final class TDLibManager: ObservableObject {
 
     private func request(
         _ object: [String: Any],
-        duringAuthorization: Bool = false,
+        scope: SessionRequestPolicy.Scope = .ordinary,
         completion: @escaping (Result<[String: Any], Swift.Error>) -> Void
     ) {
-        guard JSONSerialization.isValidJSONObject(object) else {
+        guard SessionRequestPolicy.allows(object["@type"] as? String, scope: scope),
+              JSONSerialization.isValidJSONObject(object) else {
             completion(.failure(TDRequestError(code: 0, message: "Ошибка формирования запроса")))
             return
         }
-        guard let client, !sessionEnding, duringAuthorization || authorizationState == "authorizationStateReady" else {
+        guard let client, !sessionEnding, !needsConnectionApproval,
+              scope != .ordinary || authorizationState == "authorizationStateReady" else {
             completion(.failure(TDRequestError(code: 0, message: "Сессия TDLib недоступна")))
             return
         }
@@ -148,6 +201,9 @@ final class TDLibManager: ObservableObject {
                 }
                 DispatchQueue.main.async {
                     guard let self, self.client?.id == clientID, !self.sessionEnding else { return }
+                    if case let .failure(error) = result, let error = error as? TDRequestError {
+                        self.recordSecurityCode(error.message)
+                    }
                     completion(result)
                 }
             }
@@ -400,7 +456,12 @@ final class TDLibManager: ObservableObject {
         let message = json["message"] as? String ?? "Ошибка TDLib"
         let code = int(json["code"]) ?? 0
 
+        recordSecurityCode(message)
         errorMessage = "\(code): \(message)"
+    }
+
+    private func recordSecurityCode(_ message: String) {
+        if let code = SessionRequestPolicy.securityCode(in: message) { sessionSecurityCode = code }
     }
 
     // MARK: - Авторизация
@@ -442,7 +503,6 @@ final class TDLibManager: ObservableObject {
             isLoading = false
 
         case "authorizationStateReady":
-            reconnectOnClose = true
             isAuthorized = true
             isLoading = false
             errorMessage = nil
@@ -457,7 +517,7 @@ final class TDLibManager: ObservableObject {
 
         case "authorizationStateLoggingOut":
             sessionEnding = true
-            statusMessage = "Выход из аккаунта…"
+            statusMessage = requestedLocalLogout ? "Выходим из Whogram…" : "TDLib сообщил о завершении сеанса."
             isLoading = true
 
         case "authorizationStateClosing":
@@ -467,14 +527,12 @@ final class TDLibManager: ObservableObject {
 
         case "authorizationStateClosed":
             client = nil // TDLib has released the database and no longer accepts requests.
-            if reconnectOnClose {
-                reconnectOnClose = false
-                startClient()
-            } else {
-                statusMessage = "Соединение закрыто"
-                isLoading = false
-                isAuthorized = false
-            }
+            resetSession()
+            startupGate.didClose()
+            isLoading = false
+            statusMessage = requestedLocalLogout
+                ? "Выполнен выход только из Whogram."
+                : "Сеанс закрыт. Автоматического подключения не будет."
 
         case "authorizationStateWaitOtherDeviceConfirmation":
             statusMessage = "Подтвердите вход на другом устройстве"
@@ -521,21 +579,21 @@ final class TDLibManager: ObservableObject {
     }
 
     private func setParameters() {
-        guard !initializingDatabase else { return }
+        guard !initializingDatabase, !needsConnectionApproval, let identity else { return }
         initializingDatabase = true
         isLoading = true
         errorMessage = nil
         let folders: SessionFolders
         do {
-            folders = try SessionFolders.prepare()
+            folders = try SessionFolders.prepare(storageID: identity.storageID)
         } catch {
             failInitialization(error)
             return
         }
         request([
             "@type": "setTdlibParameters",
-            "api_id": Constants.apiId,
-            "api_hash": Constants.apiHash,
+            "api_id": identity.apiID,
+            "api_hash": identity.apiHash,
             "database_directory": folders.database.path,
             "files_directory": folders.files.path,
             "database_encryption_key": "",
@@ -544,11 +602,11 @@ final class TDLibManager: ObservableObject {
             "use_message_database": true,
             "use_secret_chats": false,
             "use_test_dc": false,
-            "system_language_code": "ru",
-            "device_model": "iPhone",
-            "system_version": "iOS",
-            "application_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.0"
-        ], duringAuthorization: true) { [weak self] result in
+            "system_language_code": Locale.current.languageCode ?? "en",
+            "device_model": UIDevice.current.model,
+            "system_version": "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)",
+            "application_version": "Whogram \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.0")"
+        ], scope: .bootstrap) { [weak self] result in
             guard let self else { return }
             self.initializingDatabase = false
             if case let .failure(error) = result, self.authorizationState == "authorizationStateWaitTdlibParameters" {
@@ -566,10 +624,12 @@ final class TDLibManager: ObservableObject {
     }
 
     func logOut() {
-        guard isAuthorized, !sessionEnding else { return }
-        statusMessage = "Выход из аккаунта…"
-        request(["@type": "logOut"]) { [weak self] result in
+        guard isAuthorized, isSessionReady, !requestedLocalLogout else { return }
+        requestedLocalLogout = true
+        statusMessage = "Выход из Whogram…"
+        request(["@type": "logOut"], scope: .confirmedLocalLogout) { [weak self] result in
             if case let .failure(error) = result {
+                self?.requestedLocalLogout = false
                 self?.statusMessage = "Не удалось выйти"
                 self?.errorMessage = error.localizedDescription
             }
@@ -589,7 +649,7 @@ final class TDLibManager: ObservableObject {
         isLoading = true
         errorMessage = nil
         statusMessage = status
-        request(query, duringAuthorization: true) { [weak self] result in
+        request(query, scope: .authentication) { [weak self] result in
             guard let self, self.authorizationState == state else { return }
             self.isLoading = false
             switch result {
