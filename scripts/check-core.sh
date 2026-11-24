@@ -9,6 +9,7 @@ swiftc \
   Sources/Core/Theme/ThemeProfile.swift \
   Sources/Core/SessionFolders.swift \
   Sources/Core/SessionSafety.swift \
+  Sources/Core/AuthLifecycle.swift \
   Sources/Core/HistoryPage.swift \
   Sources/Core/Media/VoiceWaveform.swift \
   Sources/Models/AppModels.swift \

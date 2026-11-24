@@ -31,6 +31,26 @@ struct SessionFolders {
         return locations(for: storageID, at: root).hasDatabase(fileManager: fileManager)
     }
 
+    static func legacyFolders(documents: URL? = nil, fileManager: FileManager = .default) throws -> Self {
+        guard let base = documents ?? fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            throw SessionCatalogError.storage
+        }
+        let folders = locations(forLegacyRoot: base.appendingPathComponent("Whogram", isDirectory: true))
+        guard folders.hasDatabase(fileManager: fileManager) else { throw SessionCatalogError.missingDatabase }
+        try fileManager.createDirectory(at: folders.files, withIntermediateDirectories: true)
+        return folders
+    }
+
+    static func hasLegacyDatabase(documents: URL? = nil, fileManager: FileManager = .default) -> Bool {
+        guard let base = documents ?? fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else { return false }
+        return locations(forLegacyRoot: base.appendingPathComponent("Whogram", isDirectory: true)).hasDatabase(fileManager: fileManager)
+    }
+
+    private static func locations(forLegacyRoot profile: URL) -> Self {
+        Self(database: profile.appendingPathComponent("Database", isDirectory: true),
+             files: profile.appendingPathComponent("Files", isDirectory: true))
+    }
+
     static func prepare(storageID: UUID, requiresExistingDatabase: Bool = false,
                         applicationSupport: URL? = nil, fileManager: FileManager = .default) throws -> Self {
         var root = try root(at: applicationSupport, fileManager: fileManager)

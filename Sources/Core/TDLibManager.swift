@@ -30,13 +30,21 @@ final class TDLibManager: ObservableObject {
     private var requestedLocalLogout = false
     private var acknowledgedLocalLogout = false
     @Published private(set) var closeRequested = false
-    private var initializingDatabase = false
+    private var authLifecycle = AuthLifecycle()
+    private var authWatchdog: DispatchWorkItem?
+    private var closeWatchdog: DispatchWorkItem?
+    private var journal = AuthJournal()
     private var sessionEnding = false
     private var openChats: Set<Int64> = []
     private var downloadPriorities: [Int32: Int32] = [:]
 
     // Авторизация
-    @Published var authorizationState = "authorizationStateWaitTdlibParameters"
+    @Published private(set) var authPhase = AuthPhase.idle
+    @Published private(set) var authTimedOut = false
+    @Published private(set) var registrationTerms: String?
+    @Published private(set) var registrationMinimumAge = 0
+    @Published private(set) var confirmationLink: URL?
+    var authorizationState: String { authPhase.rawValue }
     @Published var isAuthorized = false
     @Published var isLoading = false
     @Published var errorMessage: String?
@@ -48,12 +56,24 @@ final class TDLibManager: ObservableObject {
     var profiles: [SessionProfile] { catalog.profiles }
     var selectedProfileID: UUID? { catalog.selectedID }
     var sessionTitle: String? { catalog.profile(selectedProfileID)?.title }
+    var canAdoptLegacy: Bool {
+        !catalogUnavailable && !catalog.profiles.contains(where: { $0.usesLegacyFolders == true }) && SessionFolders.hasLegacyDatabase()
+    }
     @Published private(set) var sessionSecurityCode: String?
     @Published var authCodePhone: String?
     @Published var authCodeLength: Int = 0
     @Published var passwordHint: String?
     var isSessionReady: Bool {
-        authorizationState == "authorizationStateReady" && !sessionEnding && !closeRequested && !requestedLocalLogout
+        authPhase == .ready && !sessionEnding && !closeRequested && !requestedLocalLogout
+    }
+
+    var authJournalText: String { journal.entries.joined(separator: "\n") }
+
+    func clearAuthJournal() { journal.clear() }
+
+    private func trace(_ event: AuthJournal.Event) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        journal.append(event)
     }
 
     // Данные
@@ -105,14 +125,17 @@ final class TDLibManager: ObservableObject {
             errorMessage = nil
             if let profile = catalog.profile(catalog.selectedID),
                profile.canResumeAtLaunch(hasLegacyDatabase: profile.databaseKey == nil && SessionFolders.hasDatabase(storageID: profile.id)) {
+                trace(.coldResume)
                 scheduleStart(profile.id, restoring: true)
             } else {
                 statusMessage = catalog.profiles.isEmpty ? "Подключите первый аккаунт" : "Выберите аккаунт"
             }
         } catch let error as TelegramIdentityStore.StoreError {
+            trace(.keychainUnavailable)
             catalogUnavailable = true
             errorMessage = error.localizedDescription
         } catch {
+            trace(.keychainUnavailable)
             catalogUnavailable = true
             errorMessage = "Не удалось прочитать каталог аккаунтов. Базы не изменены."
         }
@@ -132,15 +155,20 @@ final class TDLibManager: ObservableObject {
     }
 
     @discardableResult
-    func addProfile(id: String, hash: String, acknowledgePublicIdentity: Bool) -> Bool {
+    func addProfile(id: String, hash: String, acknowledgePublicIdentity: Bool, adoptLegacy: Bool = false) -> Bool {
         guard canChooseProfile else { return false }
         do {
             let proposed = try TelegramAppIdentity(id: id, hash: hash)
             guard proposed.apiID != TelegramAppIdentity.previouslyPublicID || acknowledgePublicIdentity else { return false }
             var next = catalog
-            next.add(proposed, databaseKey: try TelegramIdentityStore.makeDatabaseKey())
+            if adoptLegacy {
+                guard canAdoptLegacy else { throw SessionCatalogError.missingDatabase }
+                next.adoptLegacy(proposed)
+            } else {
+                next.add(proposed, databaseKey: try TelegramIdentityStore.makeDatabaseKey())
+            }
             try persist(next)
-            scheduleStart(proposed.storageID, restoring: false)
+            scheduleStart(proposed.storageID, restoring: adoptLegacy)
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -166,7 +194,7 @@ final class TDLibManager: ObservableObject {
     }
 
     private func hasStoredSession(_ profile: SessionProfile) -> Bool {
-        profile.wasAuthorized || (profile.automaticRecoveryDisabled != true && profile.databaseKey == nil
+        profile.usesLegacyFolders == true || profile.wasAuthorized || (profile.automaticRecoveryDisabled != true && profile.databaseKey == nil
             && SessionFolders.hasDatabase(storageID: profile.id))
     }
 
@@ -214,25 +242,38 @@ final class TDLibManager: ObservableObject {
         networkNotice = nil
         sessionSecurityCode = nil
         sessionEnding = false
-        initializingDatabase = false
         loadingHistory = []
         isLoadingChats = false
         downloading = []
         downloadPriorities = [:]
         downloadProgress = [:]
-        authorizationState = "authorizationStateWaitTdlibParameters"
+        authLifecycle.startClient()
+        authPhase = .initializing
+        authTimedOut = false
+        registrationTerms = nil
+        registrationMinimumAge = 0
+        confirmationLink = nil
         client = transport.createClient { [weak self] data, source in
             DispatchQueue.main.async {
                 guard let self, self.client?.id == source.id else { return }
                 self.handleUpdate(data)
             }
         }
+        trace(.clientCreated)
+        guard let clientID = client?.id else { return }
+        armAuthWatchdog(after: 35) { manager in
+            guard manager.client?.id == clientID, manager.authPhase == .initializing else { return }
+            manager.trace(.startupTimeout)
+            manager.showAuthTimeout()
+        }
     }
 
     func retrySession() {
         if recoveryNeedsRetry, let profile = catalog.profile(selectedProfileID), hasStoredSession(profile) {
+            trace(.manualRecovery)
             scheduleStart(profile.id, restoring: true)
-        } else if client != nil, !needsConnectionApproval, authorizationState == "authorizationStateWaitTdlibParameters" {
+        } else if client != nil, !needsConnectionApproval, authPhase == .parameters, authLifecycle.operation == nil {
+            trace(.manualRecovery)
             isRestoringSession = catalog.profile(activeProfileID).map(hasStoredSession) ?? false
             setParameters()
         }
@@ -258,13 +299,21 @@ final class TDLibManager: ObservableObject {
         guard client != nil, !sessionEnding, !closeRequested, !requestedLocalLogout else { return }
         closeIntent = intent
         closeRequested = true
+        trace(.closeRequested)
+        armCloseWatchdog()
         statusMessage = "Сохраняем сеанс и закрываем соединение…"
         request(["@type": "close"], scope: .disconnect) { [weak self] result in
-            if case let .failure(error) = result {
+            switch result {
+            case .success:
+                self?.trace(.closeResponse(nil))
+            case .failure(let error):
+                let code = (error as? TDRequestError)?.code ?? 0
+                self?.trace(.closeResponse(code))
                 self?.closeIntent = nil
                 self?.closeRequested = false
+                self?.closeWatchdog?.cancel()
                 self?.statusMessage = "Не удалось закрыть соединение"
-                self?.errorMessage = error.localizedDescription
+                self?.errorMessage = "Не удалось закрыть клиент TDLib (код \(code))."
             }
         }
     }
@@ -301,6 +350,7 @@ final class TDLibManager: ObservableObject {
         scope: SessionRequestPolicy.Scope = .ordinary,
         completion: @escaping (Result<[String: Any], Swift.Error>) -> Void
     ) {
+        dispatchPrecondition(condition: .onQueue(.main))
         guard SessionRequestPolicy.allows(object["@type"] as? String, scope: scope),
               JSONSerialization.isValidJSONObject(object) else {
             completion(.failure(TDRequestError(code: 0, message: "Ошибка формирования запроса")))
@@ -329,7 +379,8 @@ final class TDLibManager: ObservableObject {
                 }
                 DispatchQueue.main.async {
                     guard let self, self.client?.id == clientID, !self.sessionEnding else { return }
-                    if case let .failure(error) = result, let error = error as? TDRequestError {
+                    if scope != .authentication, scope != .bootstrap,
+                       case let .failure(error) = result, let error = error as? TDRequestError {
                         self.recordSecurityCode(error.message)
                     }
                     completion(result)
@@ -613,49 +664,64 @@ final class TDLibManager: ObservableObject {
 
     private func handleAuthState(_ state: [String: Any]) {
         guard let type = state["@type"] as? String else { return }
-        authorizationState = type
-        errorMessage = nil
+        let previous = authPhase
+        let next = AuthPhase(update: type)
+        let update = authLifecycle.observe(next)
+        trace(.transition(previous, next, update))
+        guard update != .rejected else { return }
+        if update == .advanced {
+            authPhase = next
+            authWatchdog?.cancel()
+            authTimedOut = false
+            isLoading = false
+            errorMessage = nil
+            authCodePhone = nil
+            authCodeLength = 0
+            passwordHint = nil
+            registrationTerms = nil
+            registrationMinimumAge = 0
+            confirmationLink = nil
+        } else {
+            // Resends and email-code updates may refresh fields without moving
+            // phase. They must not reset the client or unlock an in-flight query.
+            if authLifecycle.operation == nil, ![.loggingOut, .closing].contains(next) {
+                authWatchdog?.cancel()
+                authTimedOut = false
+                isLoading = false
+            }
+            guard [.emailCode, .code, .password, .registration, .deviceConfirmation].contains(next) else { return }
+        }
+        if next != .parameters { isRestoringSession = false }
 
-        switch type {
-        case "authorizationStateWaitTdlibParameters":
+        switch next {
+        case .parameters:
             statusMessage = "Настройка TDLib…"
             setParameters()
 
-        case "authorizationStateWaitPhoneNumber":
-            resetSession()
-            isRestoringSession = false
+        case .phone:
+            if isAuthorized { resetSession() }
             requiresReauthentication = activeRequiresExistingDatabase
             statusMessage = requiresReauthentication
                 ? "TDLib открыла сохранённую базу, но запросила вход. Whogram не отправит код без вашего действия."
                 : "Введите номер телефона"
             isLoading = false
 
-        case "authorizationStateWaitEmailAddress":
-            isRestoringSession = false
+        case .email:
             statusMessage = "Введите адрес электронной почты"
             isLoading = false
 
-        case "authorizationStateWaitEmailCode":
-            isRestoringSession = false
+        case .emailCode:
             authCodePhone = (state["code_info"] as? [String: Any])?["email_address_pattern"] as? String
             statusMessage = "Введите код из электронной почты"
-            isLoading = false
-
-        case "authorizationStateWaitCode":
-            isRestoringSession = false
+        case .code:
             let info = state["code_info"] as? [String: Any]
             authCodePhone = info?["phone_number"] as? String
             authCodeLength = int((info?["type"] as? [String: Any])?["length"]) ?? 0
             statusMessage = "Введите код из Telegram"
-            isLoading = false
-
-        case "authorizationStateWaitPassword":
-            isRestoringSession = false
+        case .password:
             passwordHint = state["password_hint"] as? String
             statusMessage = "Введите облачный пароль"
-            isLoading = false
-
-        case "authorizationStateReady":
+        case .ready:
             guard !closeRequested else { return }
             activeRequiresExistingDatabase = true
             isRestoringSession = false
@@ -673,7 +739,7 @@ final class TDLibManager: ObservableObject {
                 refreshHistory(chatID: id)
             }
 
-        case "authorizationStateLoggingOut":
+        case .loggingOut:
             sessionEnding = true
             if requestedLocalLogout { acknowledgedLocalLogout = true }
             else {
@@ -682,29 +748,42 @@ final class TDLibManager: ObservableObject {
             }
             statusMessage = requestedLocalLogout ? "Выходим из Whogram…" : "TDLib сообщил о завершении сеанса."
             isLoading = true
+            armCloseWatchdog()
 
-        case "authorizationStateClosing":
+        case .closing:
             sessionEnding = true
             statusMessage = "Закрытие соединения…"
             isLoading = true
+            armCloseWatchdog()
 
-        case "authorizationStateClosed":
+        case .closed:
             finishClosedClient()
 
-        case "authorizationStateWaitOtherDeviceConfirmation":
-            isRestoringSession = false
+        case .deviceConfirmation:
+            if let raw = state["link"] as? String, let url = URL(string: raw), url.scheme == "tg" {
+                confirmationLink = url
+            }
             statusMessage = "Подтвердите вход на другом устройстве"
-            isLoading = false
 
-        default:
-            isRestoringSession = false
+        case .registration:
+            let terms = state["terms_of_service"] as? [String: Any]
+            registrationTerms = (terms?["text"] as? [String: Any])?["text"] as? String
+            registrationMinimumAge = int(terms?["min_user_age"]) ?? 0
+            statusMessage = "Для этого номера Telegram запрашивает регистрацию"
+
+        case .premium:
+            statusMessage = "Telegram требует покупку Premium для входа. Завершите этот шаг в официальном приложении."
+
+        case .unsupported:
             statusMessage = "Этот способ авторизации пока не поддерживается"
-            isLoading = false
-            break
+
+        case .idle, .initializing: break
         }
     }
 
     private func finishClosedClient() {
+        trace(.clientClosed)
+        closeWatchdog?.cancel()
         let previous = activeProfileID
         let wasEstablished = activeRequiresExistingDatabase
         let securityStop = sessionSecurityCode != nil || remoteLogout
@@ -730,7 +809,10 @@ final class TDLibManager: ObservableObject {
         switch SessionClosePolicy.action(intent: intent, loggedOut: explicitLogout,
                                          hadSecurityStop: securityStop, canRecover: canRecover) {
         case .recover:
-            if let previous { scheduleStart(previous, restoring: true) }
+            if let previous {
+                trace(.automaticRecovery)
+                scheduleStart(previous, restoring: true)
+            }
         case .switchAccount(let target):
             guard let profile = catalog.profile(target) else { showAccountPicker(); return }
             var next = catalog
@@ -803,14 +885,24 @@ final class TDLibManager: ObservableObject {
     }
 
     private func setParameters() {
-        guard !initializingDatabase, !needsConnectionApproval, !closeRequested,
+        guard authPhase == .parameters, authLifecycle.operation == nil, !needsConnectionApproval, !closeRequested,
               let profile = catalog.profile(activeProfileID) else { return }
-        initializingDatabase = true
         isLoading = true
         errorMessage = nil
         let folders: SessionFolders
         do {
-            folders = try SessionFolders.prepare(storageID: profile.id, requiresExistingDatabase: activeRequiresExistingDatabase)
+            if profile.usesLegacyFolders == true {
+                folders = try SessionFolders.legacyFolders()
+            } else {
+                folders = try SessionFolders.prepare(storageID: profile.id, requiresExistingDatabase: activeRequiresExistingDatabase)
+            }
+        } catch {
+            if case .missingDatabase? = error as? SessionCatalogError { trace(.missingDatabase) }
+            else { trace(.directoryUnavailable) }
+            failInitialization(error)
+            return
+        }
+        do {
             // The Swift wrapper has no request logger configured. Also suppress native
             // TDLib verbose logs before passing any local paths or credential fields.
             let logging = try client?.execute(query: RawTdQuery(object: [
@@ -818,10 +910,11 @@ final class TDLibManager: ObservableObject {
             ]))
             guard logging?["@type"] as? String == "ok" else { throw SessionCatalogError.storage }
         } catch {
+            trace(.nativeLoggingUnavailable)
             failInitialization(error)
             return
         }
-        request([
+        runAuthRequest(.bootstrap, object: [
             "@type": "setTdlibParameters",
             "api_id": profile.identity.apiID,
             "api_hash": profile.identity.apiHash,
@@ -837,24 +930,17 @@ final class TDLibManager: ObservableObject {
             "device_model": UIDevice.current.model,
             "system_version": "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)",
             "application_version": "Whogram \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.0")"
-        ], scope: .bootstrap) { [weak self] result in
-            guard let self else { return }
-            self.initializingDatabase = false
-            if case let .failure(error) = result, self.authorizationState == "authorizationStateWaitTdlibParameters" {
-                self.failInitialization(error, fromTDLib: true)
-            }
-        }
+        ], status: "Открываем локальную базу TDLib…")
     }
 
     private func failInitialization(_ error: Swift.Error, fromTDLib: Bool = false) {
-        initializingDatabase = false
         isRestoringSession = false
         isLoading = false
         isAuthorized = false
         statusMessage = "Не удалось открыть локальную сессию"
         if fromTDLib, let error = error as? TDRequestError {
-            errorMessage = error.code == 401 ? "Не удалось открыть базу с сохранённым ключом. База не изменена."
-                : "TDLib отклонила параметры подключения (код \(error.code)). База не изменена."
+            errorMessage = error.code == 401 ? "Не удалось открыть базу с сохранённым ключом. Whogram не будет её сбрасывать."
+                : "TDLib отклонила параметры подключения (код \(error.code)). Whogram не будет сбрасывать базу."
         } else {
             errorMessage = error is SessionCatalogError ? error.localizedDescription : "Локальная база недоступна. База не изменена."
         }
@@ -864,15 +950,21 @@ final class TDLibManager: ObservableObject {
         guard isAuthorized, isSessionReady, !requestedLocalLogout else { return }
         suspendAutomaticRecovery()
         requestedLocalLogout = true
+        trace(.logoutRequested)
+        armCloseWatchdog()
         statusMessage = "Выход из Whogram…"
         request(["@type": "logOut"], scope: .confirmedLocalLogout) { [weak self] result in
             switch result {
             case .success:
+                self?.trace(.logoutResponse(nil))
                 self?.acknowledgedLocalLogout = true
             case let .failure(error):
+                let code = (error as? TDRequestError)?.code ?? 0
+                self?.trace(.logoutResponse(code))
                 self?.requestedLocalLogout = false
+                self?.closeWatchdog?.cancel()
                 self?.statusMessage = "Не удалось выйти"
-                self?.errorMessage = error.localizedDescription
+                self?.errorMessage = "TDLib не подтвердила выход (код \(code))."
             }
         }
     }
@@ -891,23 +983,93 @@ final class TDLibManager: ObservableObject {
         ], status: "Запрашиваем новый код…")
     }
 
+    func requestQRLogin() {
+        submitAuthentication(["@type": "requestQrCodeAuthentication", "other_user_ids": [Int64]()],
+                             status: "Запрашиваем QR для входа…")
+    }
+
     func submitAuthentication(_ query: [String: Any], status: String) {
         guard !isLoading, !closeRequested, !requiresReauthentication, sessionSecurityCode == nil,
-              SessionRequestPolicy.matchesAuthState(query["@type"] as? String, state: authorizationState) else { return }
-        let state = authorizationState
+              let raw = query["@type"] as? String, let method = AuthMethod(rawValue: raw), method != .bootstrap else { return }
+        runAuthRequest(method, object: query, status: status)
+    }
+
+    private func runAuthRequest(_ method: AuthMethod, object: [String: Any], status: String) {
+        guard let operation = authLifecycle.begin(method) else { return }
+        let scope: SessionRequestPolicy.Scope = method == .bootstrap ? .bootstrap : .authentication
         isLoading = true
+        authTimedOut = false
         errorMessage = nil
         statusMessage = status
-        request(query, scope: .authentication) { [weak self] result in
-            guard let self, self.authorizationState == state else { return }
-            self.isLoading = false
+        trace(.request(method))
+        armAuthWatchdog(after: method == .bootstrap ? 45 : 60) { manager in
+            guard manager.authLifecycle.expire(operation) else { return }
+            manager.trace(.operationTimeout(method))
+            manager.showAuthTimeout()
+        }
+        request(object, scope: scope) { [weak self] result in
+            guard let self else { return }
             switch result {
-            case .success: self.statusMessage = "Ожидаем подтверждение Telegram…"
+            case .success:
+                self.trace(.response(method, nil, nil))
+                switch self.authLifecycle.reply(to: operation, ok: true) {
+                case .stale: break
+                case .finished: self.finishAuthRequest()
+                case .waitingForUpdate:
+                    if !self.authTimedOut { self.statusMessage = "Ожидаем следующее состояние TDLib…" }
+                }
             case .failure(let error):
-                let code = (error as? TDRequestError)?.code ?? 0
-                self.errorMessage = "Не удалось завершить этот шаг входа (код \(code)). Проверьте данные и попробуйте снова."
+                let tdError = error as? TDRequestError
+                let code = tdError?.code ?? 0
+                self.trace(.response(method, code, tdError?.message))
+                guard self.authLifecycle.reply(to: operation, ok: false) == .finished else { return }
+                self.finishAuthRequest()
+                if let message = tdError?.message { self.recordSecurityCode(message) }
+                if method == .bootstrap {
+                    self.failInitialization(error, fromTDLib: true)
+                } else {
+                    let reason = AuthJournal.Event.safeReason(code: code, message: tdError?.message)
+                    self.errorMessage = "Этот шаг входа не выполнен: \(reason) (код \(code))."
+                }
             }
         }
+    }
+
+    private func finishAuthRequest() {
+        authWatchdog?.cancel()
+        authTimedOut = false
+        isLoading = false
+    }
+
+    private func armAuthWatchdog(after seconds: TimeInterval, action: @escaping (TDLibManager) -> Void) {
+        authWatchdog?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            if let self { action(self) }
+        }
+        authWatchdog = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: item)
+    }
+
+    private func showAuthTimeout() {
+        isRestoringSession = false
+        authTimedOut = true
+        isLoading = false
+        errorMessage = "TDLib не ответила вовремя. Можно дождаться ответа или вернуться к выбору аккаунта. Запрос не отправлен повторно."
+    }
+
+    private func armCloseWatchdog() {
+        closeWatchdog?.cancel()
+        let clientID = client?.id
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, let clientID, self.client?.id == clientID,
+                  self.closeRequested || self.requestedLocalLogout || self.sessionEnding else { return }
+            self.trace(.closingTimeout)
+            self.isRestoringSession = false
+            self.isLoading = false
+            self.errorMessage = "TDLib ещё не закрыла базу. Другой клиент не запущен. Если ожидание продолжается, перезапустите Whogram."
+        }
+        closeWatchdog = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 45, execute: item)
     }
 
     // MARK: - Загрузка данных

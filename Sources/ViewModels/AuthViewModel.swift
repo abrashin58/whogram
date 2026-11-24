@@ -6,6 +6,8 @@ final class AuthViewModel: ObservableObject {
     @Published var password = ""
     @Published var email = ""
     @Published var emailCode = ""
+    @Published var firstName = ""
+    @Published var lastName = ""
 
     private var tdlib: TDLibManager { TDLibManager.shared }
 
@@ -15,12 +17,14 @@ final class AuthViewModel: ObservableObject {
         password = ""
         email = ""
         emailCode = ""
+        firstName = ""
+        lastName = ""
     }
 
     func submitPhone() {
         tdlib.submitAuthentication([
             "@type": "setAuthenticationPhoneNumber",
-            "phone_number": phone,
+            "phone_number": phone.trimmingCharacters(in: .whitespacesAndNewlines),
             "settings": [
                 "@type": "phoneNumberAuthenticationSettings",
                 "allow_flash_call": false,
@@ -53,5 +57,13 @@ final class AuthViewModel: ObservableObject {
             "@type": "checkAuthenticationEmailCode",
             "code": ["@type": "emailAddressAuthenticationCode", "code": emailCode.trimmingCharacters(in: .whitespacesAndNewlines)]
         ], status: "Проверка кода…")
+    }
+
+    func register() {
+        let first = firstName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let last = lastName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !first.isEmpty, first.count <= 64, last.count <= 64 else { return }
+        tdlib.submitAuthentication(["@type": "registerUser", "first_name": first, "last_name": last,
+                                    "disable_notification": false], status: "Регистрируем аккаунт…")
     }
 }

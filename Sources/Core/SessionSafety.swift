@@ -78,6 +78,7 @@ struct SessionProfile: Codable, Identifiable, Equatable {
     var title: String
     var wasAuthorized = false
     var automaticRecoveryDisabled: Bool?
+    var usesLegacyFolders: Bool?
     var id: UUID { identity.storageID }
 
     func canResumeAtLaunch(hasLegacyDatabase: Bool = false) -> Bool {
@@ -115,6 +116,8 @@ struct SessionCatalog: Codable, Equatable {
         let ids = Set(profiles.map(\.id))
         guard ids.count == profiles.count,
               profiles.allSatisfy({ $0.databaseKey == nil || $0.databaseKey?.count == 32 }),
+              profiles.filter({ $0.usesLegacyFolders == true }).count <= 1,
+              profiles.allSatisfy({ $0.usesLegacyFolders != true || $0.databaseKey == nil }),
               selectedID.map(ids.contains) ?? profiles.isEmpty else { throw SessionCatalogError.invalid }
         return self
     }
@@ -131,6 +134,13 @@ struct SessionCatalog: Codable, Equatable {
     mutating func add(_ identity: TelegramAppIdentity, databaseKey: Data) {
         guard profile(identity.storageID) == nil, databaseKey.count == 32 else { return }
         profiles.append(.init(identity: identity, databaseKey: databaseKey, title: "Аккаунт \(profiles.count + 1)"))
+        select(identity.storageID)
+    }
+
+    mutating func adoptLegacy(_ identity: TelegramAppIdentity) {
+        guard profile(identity.storageID) == nil, !profiles.contains(where: { $0.usesLegacyFolders == true }) else { return }
+        profiles.append(.init(identity: identity, databaseKey: nil, title: "Профиль из прежнего Whogram",
+                              automaticRecoveryDisabled: true, usesLegacyFolders: true))
         select(identity.storageID)
     }
 
@@ -168,39 +178,26 @@ enum SessionRequestPolicy {
         case .bootstrap:
             return type == "setTdlibParameters"
         case .authentication:
-            return authMethods.contains(type)
+            return AuthMethod(rawValue: type).map { $0 != .bootstrap } ?? false
         case .confirmedLocalLogout:
             return type == "logOut"
         case .disconnect:
             return type == "close"
         case .ordinary:
-            return !blocked.contains(type) && !authMethods.contains(type)
-                && type != "logOut" && type != "setTdlibParameters"
+            return !blocked.contains(type) && AuthMethod(rawValue: type) == nil && type != "logOut"
         }
     }
 
-    private static let authMethods: Set<String> = [
-        "setAuthenticationPhoneNumber", "checkAuthenticationCode", "checkAuthenticationPassword",
-        "setAuthenticationEmailAddress", "checkAuthenticationEmailCode", "resendAuthenticationCode"
-    ]
-
     static func matchesAuthState(_ type: String?, state: String) -> Bool {
-        switch (type, state) {
-        case ("setAuthenticationPhoneNumber", "authorizationStateWaitPhoneNumber"),
-             ("checkAuthenticationCode", "authorizationStateWaitCode"),
-             ("resendAuthenticationCode", "authorizationStateWaitCode"),
-             ("checkAuthenticationPassword", "authorizationStateWaitPassword"),
-             ("setAuthenticationEmailAddress", "authorizationStateWaitEmailAddress"),
-             ("checkAuthenticationEmailCode", "authorizationStateWaitEmailCode"):
-            return true
-        default:
-            return false
-        }
+        guard let type, let method = AuthMethod(rawValue: type), method != .bootstrap else { return false }
+        return method.allowed(in: AuthPhase(update: state))
     }
     private static let blocked: Set<String> = [
         "terminateSession", "terminateAllOtherSessions", "terminateWebAppSession",
         "terminateAllWebAppSessions", "deleteAccount", "destroy", "close",
-        "setInactiveSessionTtl", "resetAuthorizations", "resetAuthorization"
+        "setInactiveSessionTtl", "resetAuthorizations", "resetAuthorization", "resetAuthenticationEmailAddress",
+        "recoverAuthenticationPassword", "requestAuthenticationPasswordRecovery", "checkAuthenticationPasswordRecoveryCode",
+        "checkAuthenticationBotToken", "checkAuthenticationWebToken", "finishPasskeyLogin"
     ]
 
     static func securityCode(in message: String) -> String? {

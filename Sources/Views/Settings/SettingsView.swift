@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var tdlib: TDLibManager
     @EnvironmentObject var theme: ThemeManager
+    @State private var showAuthDiagnostics = false
 
     @State private var showLogout = false
     @State private var showProfileEditor = false
@@ -122,6 +123,13 @@ struct SettingsView: View {
                             infoRow("TDLib", "1.8.70")
                             Divider().overlay(theme.separator)
                             infoRow("Тема", "\(theme.preset.title) · \(theme.appearance.title)")
+                            Divider().overlay(theme.separator)
+                            Button {
+                                showAuthDiagnostics = true
+                            } label: {
+                                settingRow(icon: "waveform.path", color: theme.accent.main, title: "Диагностика входа", value: "")
+                            }
+                            .buttonStyle(.plain)
                         }
 
                         Text("Сделано на SwiftUI + TDLib")
@@ -140,6 +148,7 @@ struct SettingsView: View {
             .sheet(isPresented: $showAccounts) {
                 accountSwitcher
             }
+            .sheet(isPresented: $showAuthDiagnostics) { AuthDiagnosticsView() }
             .alert("Выйти только из Whogram?", isPresented: $showLogout) {
                 Button("Отмена", role: .cancel) { }
                 Button("Выйти", role: .destructive) {

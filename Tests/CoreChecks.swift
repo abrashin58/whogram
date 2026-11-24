@@ -8,9 +8,11 @@ struct CoreChecks {
         try checkSessionFolders()
         try checkSessionSafety()
         try checkAccountCatalog()
+        checkAuthorizationLifecycle()
+        checkAuthJournal()
         checkChatOrder()
         checkHistory()
-        print("OK: темы, HEX, изоляция сессии, разрешения TDLib, курсор истории, звуковая волна")
+        print("OK: AuthLifecycle, AuthJournal, хранилище сессий, темы, история, звуковая волна")
     }
 
     static func checkVoiceWaveform() {
@@ -109,6 +111,12 @@ struct CoreChecks {
         precondition(persisted == data)
         let legacyPersisted = try Data(contentsOf: legacyMarker)
         precondition(legacyPersisted == legacyData)
+        let docs = root.appendingPathComponent("Documents", isDirectory: true)
+        precondition(SessionFolders.hasLegacyDatabase(documents: docs))
+        let adopted = try SessionFolders.legacyFolders(documents: docs)
+        precondition(adopted.database.path == legacy.path && adopted.database != second.database)
+        let reopenedLegacy = try Data(contentsOf: adopted.database.appendingPathComponent("td.binlog"))
+        precondition(reopenedLegacy == legacyData)
         precondition(SessionFolders.hasDatabase(storageID: storageID, applicationSupport: support))
         precondition(!SessionFolders.hasDatabase(storageID: UUID(), applicationSupport: support))
         let missingID = UUID()
@@ -213,8 +221,76 @@ struct CoreChecks {
         precondition(paused.profile(first.storageID)?.wasAuthorized == true)
         catalog.confirmAuthorization(for: first.storageID)
         precondition(catalog.profile(first.storageID)?.canResumeAtLaunch() == true)
+        let legacy = try TelegramAppIdentity(id: "93451235", hash: syntheticHash)
+        catalog.adoptLegacy(legacy)
+        catalog.adoptLegacy(try TelegramAppIdentity(id: "93451236", hash: syntheticHash))
+        let adopted = try catalog.validated()
+        precondition(adopted.profiles.filter { $0.usesLegacyFolders == true }.count == 1)
+        precondition(adopted.profile(legacy.storageID)?.databaseKey == nil)
+        precondition(adopted.profile(legacy.storageID)?.canResumeAtLaunch(hasLegacyDatabase: true) == false)
         let corrupt = try JSONDecoder().decode(SessionCatalog.self, from: Data(#"{"profiles":[],"selectedID":"00000000-0000-0000-0000-000000000000"}"#.utf8))
         precondition((try? corrupt.validated()) == nil)
+    }
+
+    static func checkAuthorizationLifecycle() {
+        var flow = AuthLifecycle()
+        precondition(flow.phase == .idle && flow.begin(.bootstrap) == nil)
+        flow.startClient()
+        precondition(flow.begin(.bootstrap) == nil)
+        precondition(flow.observe(.parameters) == .advanced)
+        let bootstrap = flow.begin(.bootstrap)!
+        precondition(flow.reply(to: bootstrap, ok: true) == .waitingForUpdate)
+        precondition(flow.observe(.parameters) == .refreshed && flow.begin(.bootstrap) == nil)
+        precondition(flow.expire(bootstrap) && !flow.expire(bootstrap))
+        precondition(flow.begin(.bootstrap) == nil)
+        precondition(flow.observe(.phone) == .advanced && !flow.timedOut)
+        let phone = flow.begin(.phone)!
+        precondition(flow.begin(.qr) == nil)
+        precondition(flow.reply(to: phone, ok: false) == .finished)
+        let retry = flow.begin(.phone)!
+        precondition(flow.observe(.code) == .advanced)
+        precondition(flow.reply(to: retry, ok: true) == .stale)
+        let resend = flow.begin(.resend)!
+        precondition(flow.observe(.code) == .refreshed && flow.begin(.code) == nil)
+        precondition(flow.reply(to: resend, ok: true) == .finished)
+        let code = flow.begin(.code)!
+        precondition(flow.observe(.password) == .advanced)
+        precondition(flow.reply(to: code, ok: true) == .stale)
+        let password = flow.begin(.password)!
+        precondition(flow.reply(to: password, ok: true) == .waitingForUpdate)
+        precondition(flow.observe(.ready) == .advanced)
+        precondition(flow.observe(.ready) == .refreshed)
+        precondition(flow.observe(.phone) == .rejected)
+        precondition(flow.observe(.closing) == .advanced)
+        precondition(flow.observe(.ready) == .rejected)
+        precondition(flow.observe(.closed) == .advanced)
+        precondition(flow.observe(.parameters) == .rejected)
+        flow.startClient()
+        precondition(flow.observe(.parameters) == .advanced)
+        let reopen = flow.begin(.bootstrap)!
+        precondition(flow.reply(to: bootstrap, ok: true) == .stale)
+        precondition(flow.observe(.ready) == .advanced && flow.reply(to: reopen, ok: true) == .stale)
+        precondition(AuthMethod.register.allowed(in: .registration) && !AuthMethod.register.allowed(in: .code))
+        precondition(AuthMethod.resend.allowed(in: .emailCode))
+        precondition(AuthPhase(update: "authorizationStateUnrecognized") == .unsupported)
+    }
+
+    static func checkAuthJournal() {
+        let suite = "whogram.tests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var journal = AuthJournal(defaults: defaults)
+        let date = Date(timeIntervalSince1970: 0)
+        journal.append(.response(.password, 400, "private-field-must-not-leak"), at: date)
+        journal.append(.response(.code, 400, "PHONE_CODE_INVALID"), at: date)
+        let loaded = AuthJournal(defaults: defaults)
+        precondition(loaded.entries.count == 2)
+        precondition(loaded.entries[0].hasPrefix("1970-01-01T00:00:00Z "))
+        precondition(!loaded.entries[0].contains("private-field") && loaded.entries[1].contains("PHONE_CODE_INVALID"))
+        for _ in 0..<200 { journal.append(.clientClosed, at: date) }
+        precondition(journal.entries.count == 160 && AuthJournal(defaults: defaults).entries.count == 160)
+        journal.clear()
+        precondition(AuthJournal(defaults: defaults).entries.isEmpty)
     }
 
     static func checkHistory() {

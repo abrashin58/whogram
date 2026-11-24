@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import CoreImage
 
 struct LoginView: View {
     @EnvironmentObject var tdlib: TDLibManager
@@ -10,11 +11,14 @@ struct LoginView: View {
     @State private var appeared = false
     @State private var editingIdentity = false
     @State private var editingProfile: UUID?
+    @State private var adoptLegacy = false
     @State private var apiID = ""
     @State private var apiHash = ""
     @State private var confirmConnection = false
     @State private var confirmReauthentication = false
     @State private var requestedProfile: UUID?
+    @State private var showDiagnostics = false
+    @State private var acceptedTerms = false
 
     private var isPublicIdentity: Bool {
         if let requestedProfile {
@@ -40,6 +44,9 @@ struct LoginView: View {
                             .textSelection(.enabled)
                     }
                     formBlock
+                    Button("Диагностика входа") { showDiagnostics = true }
+                        .font(theme.smallFont)
+                        .frame(minHeight: 44)
                     Spacer(minLength: 30)
                 }
                 .padding(.horizontal, 26)
@@ -55,6 +62,9 @@ struct LoginView: View {
             apiHash = ""
             viewModel.clear()
         }
+        .onChange(of: tdlib.authPhase) { _ in acceptedTerms = false }
+        .onChange(of: tdlib.registrationTerms) { _ in acceptedTerms = false }
+        .sheet(isPresented: $showDiagnostics) { AuthDiagnosticsView() }
         .alert(isPublicIdentity ? "Ранее опубликованный API ID" : "Подключиться к Telegram?", isPresented: $confirmConnection) {
             Button("Отмена", role: .cancel) {}
             Button(isPublicIdentity ? "Понимаю риск, подключиться" : "Подключиться") {
@@ -65,22 +75,26 @@ struct LoginView: View {
                         tdlib.updateProfileIdentity(editingProfile, id: apiID, hash: apiHash,
                                                     acknowledgePublicIdentity: isPublicIdentity)
                     } else {
-                        tdlib.addProfile(id: apiID, hash: apiHash, acknowledgePublicIdentity: isPublicIdentity)
+                        tdlib.addProfile(id: apiID, hash: apiHash, acknowledgePublicIdentity: isPublicIdentity, adoptLegacy: adoptLegacy)
                     }
                     if saved {
                         apiID = ""
                         apiHash = ""
                         editingIdentity = false
                         editingProfile = nil
+                        adoptLegacy = false
                     }
                 }
                 viewModel.clear()
             }
         } message: {
-            Text(isPublicIdentity
-                 ? "Эта пара ранее была в открытом репозитории. Telegram может отклонить вход или завершить сеансы. Не используйте основной аккаунт."
-                 : editingProfile != nil ? "Новая пара будет сохранена для этого профиля. Его база и ключ шифрования не изменятся."
-                    : "Сохранённый сеанс будет открыт из локальной базы, если он доступен.")
+            Text(adoptLegacy
+                 ? "TDLib откроет старую базу на месте без переноса. Если Telegram отозвал сеанс, база не вернёт авторизацию."
+                    + (isPublicIdentity ? " Вы ввели ранее опубликованный API ID. Не используйте основной аккаунт." : "")
+                 : isPublicIdentity
+                    ? "Эта пара ранее была в открытом репозитории. Telegram может отклонить вход или завершить сеансы. Не используйте основной аккаунт."
+                    : editingProfile != nil ? "Новая пара будет сохранена для этого профиля. Его база и ключ шифрования не изменятся."
+                        : "Сохранённый сеанс будет открыт из локальной базы, если он доступен.")
         }
         .alert("Начать новую авторизацию?", isPresented: $confirmReauthentication) {
             Button("Отмена", role: .cancel) {}
@@ -147,7 +161,7 @@ struct LoginView: View {
             if tdlib.needsConnectionApproval {
                 connectionForm
             } else if tdlib.closeRequested {
-                ProgressView().tint(theme.accent.main)
+                if tdlib.isLoading { ProgressView().tint(theme.accent.main) }
                 Text("Закрываем соединение без выхода из аккаунта…")
             } else {
                 authenticationForm
@@ -168,6 +182,12 @@ struct LoginView: View {
             if tdlib.catalogUnavailable {
                 primaryButton("Повторить чтение аккаунтов", loading: false) { tdlib.loadAndResume() }
             } else if editingIdentity || tdlib.profiles.isEmpty {
+                if adoptLegacy {
+                    Text("Используется существующая база прежнего Whogram: без копирования, переноса или обнуления. Ранее опубликованный API ID не подставляется.")
+                        .font(theme.smallFont)
+                } else if tdlib.profiles.isEmpty && tdlib.canAdoptLegacy {
+                    legacyButton
+                }
                 Text("Whogram не использует общий API ID. Введите данные своего приложения Telegram; они хранятся только в связке ключей этого iPhone.")
                     .font(theme.smallFont)
                     .foregroundStyle(theme.textSecondary)
@@ -191,12 +211,13 @@ struct LoginView: View {
                     confirmConnection = true
                 }
                     .disabled(apiID.isEmpty || apiHash.isEmpty)
-                if !tdlib.profiles.isEmpty {
+                if !tdlib.profiles.isEmpty || adoptLegacy {
                     Button("Назад к аккаунтам") {
                         apiID = ""
                         apiHash = ""
                         editingIdentity = false
                         editingProfile = nil
+                        adoptLegacy = false
                     }
                     .frame(minHeight: 44)
                 }
@@ -221,6 +242,7 @@ struct LoginView: View {
                         }
                         .buttonStyle(.plain)
                         Button {
+                            adoptLegacy = false
                             editingProfile = profile.id
                             apiID = String(profile.identity.apiID)
                             apiHash = ""
@@ -234,18 +256,35 @@ struct LoginView: View {
                     Divider()
                 }
                 Button("Добавить аккаунт") {
+                    adoptLegacy = false
                     editingProfile = nil
                     editingIdentity = true
                 }
                     .frame(minHeight: 44)
+                if tdlib.canAdoptLegacy { legacyButton }
             }
         }
+    }
+
+    private var legacyButton: some View {
+        Button("Открыть базу прежнего Whogram…") {
+            requestedProfile = nil
+            editingProfile = nil
+            adoptLegacy = true
+            apiID = ""
+            apiHash = ""
+            editingIdentity = true
+        }
+        .frame(minHeight: 44)
     }
 
     @ViewBuilder
     private var authenticationForm: some View {
         if tdlib.sessionSecurityCode != nil {
             Text("Вход приостановлен. Проверьте сеансы в официальном Telegram. Не запрашивайте код повторно.")
+                .font(theme.smallFont)
+        } else if tdlib.authTimedOut {
+            Text("Повторная отправка отключена, пока TDLib может обрабатывать предыдущий запрос.")
                 .font(theme.smallFont)
         } else if tdlib.requiresReauthentication && tdlib.authorizationState == "authorizationStateWaitPhoneNumber" {
             Button("Начать новую авторизацию…") { confirmReauthentication = true }
@@ -257,8 +296,8 @@ struct LoginView: View {
 
     @ViewBuilder
     private var authenticationStep: some View {
-        switch tdlib.authorizationState {
-            case "authorizationStateWaitPhoneNumber":
+        switch tdlib.authPhase {
+            case .phone:
                 inputField("Номер телефона", text: $viewModel.phone, keyboard: .phonePad)
 
                 primaryButton("Продолжить", loading: tdlib.isLoading) {
@@ -269,8 +308,11 @@ struct LoginView: View {
                     .font(theme.font(10))
                     .foregroundColor(theme.textSecondary)
                     .multilineTextAlignment(.center)
+                Button("Войти по QR-коду") { tdlib.requestQRLogin() }
+                    .disabled(tdlib.isLoading)
+                    .frame(minHeight: 44)
 
-            case "authorizationStateWaitCode":
+            case .code:
                 if let phone = tdlib.authCodePhone {
                     Text("Код отправлен на \(phone)")
                         .font(theme.font(12))
@@ -293,18 +335,19 @@ struct LoginView: View {
                 .buttonStyle(.plain)
                 .disabled(tdlib.isLoading)
 
-            case "authorizationStateWaitEmailAddress":
+            case .email:
                 inputField("Почта", text: $viewModel.email, keyboard: .emailAddress)
                 primaryButton("Отправить код", loading: tdlib.isLoading) { viewModel.submitEmail() }
 
-            case "authorizationStateWaitEmailCode":
+            case .emailCode:
                 if let email = tdlib.authCodePhone {
                     Text(email).font(theme.font(12)).foregroundColor(theme.textSecondary)
                 }
                 inputField("Код из письма", text: $viewModel.emailCode, keyboard: .numberPad)
                 primaryButton("Подтвердить почту", loading: tdlib.isLoading) { viewModel.submitEmailCode() }
+                Button("Отправить код ещё раз") { tdlib.resendCode() }.disabled(tdlib.isLoading).frame(minHeight: 44)
 
-            case "authorizationStateWaitPassword":
+            case .password:
                 if let hint = tdlib.passwordHint, !hint.isEmpty {
                     Text("Подсказка: \(hint)")
                         .font(theme.font(12))
@@ -326,22 +369,65 @@ struct LoginView: View {
                 primaryButton("Подтвердить", loading: tdlib.isLoading) {
                     viewModel.submitPassword()
                 }
+                Text("Если забыли пароль, восстановите его в официальном Telegram, затем вернитесь в Whogram.")
+                    .font(theme.smallFont)
+                    .foregroundStyle(theme.textSecondary)
 
-            case "authorizationStateWaitTdlibParameters":
+            case .initializing:
+                if tdlib.isLoading { ProgressView().tint(theme.accent.main) }
+            case .parameters:
                 if tdlib.isLoading {
                     ProgressView().tint(theme.accent.main)
                 } else {
                     primaryButton("Повторить подключение", loading: false) { tdlib.retrySession() }
                 }
-            case "authorizationStateClosed":
+            case .closed:
                 if tdlib.isLoading { ProgressView().tint(theme.accent.main) }
                 else if tdlib.recoveryNeedsRetry {
                     primaryButton("Восстановить соединение", loading: false) { tdlib.retrySession() }
                 }
 
+            case .deviceConfirmation:
+                if let url = tdlib.confirmationLink, let image = qrImage(for: url) {
+                    Image(uiImage: image)
+                        .interpolation(.none)
+                        .resizable()
+                        .frame(width: 196, height: 196)
+                        .padding(12)
+                        .background(.white)
+                        .accessibilityLabel("QR-код для входа в Telegram")
+                    Text("На другом устройстве откройте Telegram → Настройки → Устройства → Подключить устройство.")
+                        .font(theme.smallFont)
+                } else {
+                    Text("QR-код недоступен. Вернитесь к выбору аккаунта и попробуйте ещё раз.")
+                        .font(theme.smallFont)
+                }
+
+            case .registration:
+                if let terms = tdlib.registrationTerms {
+                    Text(terms).font(theme.smallFont).textSelection(.enabled)
+                    if tdlib.registrationMinimumAge > 0 {
+                        Text("Минимальный возраст: \(tdlib.registrationMinimumAge)").font(theme.smallFont)
+                    }
+                    Toggle("Я принимаю условия и соответствую возрастным требованиям", isOn: $acceptedTerms)
+                    TextField("Имя", text: $viewModel.firstName).textContentType(.givenName).padding(12).background(theme.field)
+                    TextField("Фамилия (необязательно)", text: $viewModel.lastName).textContentType(.familyName).padding(12).background(theme.field)
+                    primaryButton("Создать аккаунт", loading: tdlib.isLoading) { viewModel.register() }
+                        .disabled(!acceptedTerms || viewModel.firstName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                } else {
+                    Text("Условия регистрации недоступны. Зарегистрируйтесь в официальном Telegram.").font(theme.smallFont)
+                }
+
             default:
                 if tdlib.isLoading { ProgressView().tint(theme.accent.main) }
         }
+    }
+
+    private func qrImage(for url: URL) -> UIImage? {
+        guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(Data(url.absoluteString.utf8), forKey: "inputMessage")
+        guard let output = filter.outputImage, let rendered = CIContext().createCGImage(output, from: output.extent) else { return nil }
+        return UIImage(cgImage: rendered)
     }
 
     private func inputField(
