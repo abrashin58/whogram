@@ -121,6 +121,18 @@ struct LoginView: View {
                         .foregroundColor(theme.accent.main)
                 }
                 .buttonStyle(.plain)
+                .disabled(tdlib.isLoading)
+
+            case "authorizationStateWaitEmailAddress":
+                inputField("Почта", text: $viewModel.email, keyboard: .emailAddress)
+                primaryButton("Отправить код", loading: tdlib.isLoading) { viewModel.submitEmail() }
+
+            case "authorizationStateWaitEmailCode":
+                if let email = tdlib.authCodePhone {
+                    Text(email).font(theme.font(12)).foregroundColor(theme.textSecondary)
+                }
+                inputField("Код из письма", text: $viewModel.emailCode, keyboard: .numberPad)
+                primaryButton("Подтвердить почту", loading: tdlib.isLoading) { viewModel.submitEmailCode() }
 
             case "authorizationStateWaitPassword":
                 if let hint = tdlib.passwordHint, !hint.isEmpty {
@@ -145,20 +157,15 @@ struct LoginView: View {
                     viewModel.submitPassword()
                 }
 
-            case "authorizationStateClosed":
-                Text("Сессия закрыта. Перезапустите приложение.")
-                    .font(theme.font(12))
-                    .foregroundColor(theme.textSecondary)
+            case "authorizationStateWaitTdlibParameters", "authorizationStateClosed":
+                if tdlib.isLoading {
+                    ProgressView().tint(theme.accent.main)
+                } else {
+                    primaryButton("Повторить подключение", loading: false) { tdlib.retrySession() }
+                }
 
             default:
-                HStack(spacing: 10) {
-                    ProgressView()
-                        .tint(theme.accent.main)
-                    Text(tdlib.statusMessage)
-                        .font(theme.font(12))
-                        .foregroundColor(theme.textSecondary)
-                }
-                .padding(.top, 8)
+                if tdlib.isLoading { ProgressView().tint(theme.accent.main) }
             }
         }
         .padding(18)
@@ -173,7 +180,7 @@ struct LoginView: View {
         keyboard: UIKeyboardType
     ) -> some View {
         TextField(placeholder, text: text)
-            .textContentType(keyboard == .phonePad ? .telephoneNumber : .oneTimeCode)
+            .textContentType(keyboard == .phonePad ? .telephoneNumber : keyboard == .emailAddress ? .emailAddress : .oneTimeCode)
             .keyboardType(keyboard)
             .font(theme.textFont)
             .foregroundColor(theme.textPrimary)

@@ -105,10 +105,6 @@ struct ChatListView: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("WHOGRAM / INBOX")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .tracking(1.7)
-                    .foregroundStyle(theme.accent.main)
                 Text("Чаты")
                     .font(theme.font(34, weight: .bold))
                     .foregroundStyle(theme.textPrimary)
@@ -259,7 +255,7 @@ struct ChatListView: View {
 
     private var chatsList: some View {
         ScrollView {
-            LazyVStack(spacing: theme.compact ? 4 : 8) {
+            LazyVStack(spacing: 0) {
                 ForEach(filteredChats) { chat in
                     NavigationLink(value: chat.id) {
                         ChatRow(chat: chat, preview: preview(for: chat))
@@ -301,7 +297,6 @@ struct ChatListView: View {
                     }
                 }
             }
-            .padding(.horizontal, 14)
             .padding(.bottom, 12)
         }
         .refreshable {
@@ -379,20 +374,13 @@ struct ChatRow: View {
                 title: chat.title,
                 fileID: chat.photoFileID ?? user?.photoFileID,
                 preview: chat.photoPreview ?? user?.photoPreview,
-                size: theme.compact ? 39 : 53,
+                size: theme.chatAvatar,
                 isOnline: user?.isOnline ?? false,
                 highlight: chat.unreadCount > 0
             )
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 4) {
-                    if chat.isPinned {
-                        Image(systemName: "pin.fill")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(theme.textSecondary)
-                            .rotationEffect(.degrees(45))
-                    }
-
                     Text(chat.title)
                         .font(theme.font(15, weight: .semibold))
                         .foregroundColor(theme.textPrimary)
@@ -406,16 +394,20 @@ struct ChatRow: View {
 
                     Spacer(minLength: 4)
 
-                    Text(chat.time)
-                        .font(theme.font(10, weight: chat.unreadCount > 0 ? .semibold : .regular))
-                        .foregroundColor(chat.unreadCount > 0 ? theme.accent.main : theme.textSecondary)
+                    if theme.profile.showsChatTime != false {
+                        Text(chat.time)
+                            .font(theme.font(11, weight: chat.unreadCount > 0 ? .semibold : .regular))
+                            .foregroundColor(chat.unreadCount > 0 ? theme.accent.main : theme.textSecondary)
+                    }
                 }
 
                 HStack(spacing: 6) {
-                    Text(preview)
-                        .font(theme.font(12))
-                        .foregroundColor(theme.textSecondary)
-                        .lineLimit(1)
+                    if theme.profile.showsChatPreview != false {
+                        Text(preview)
+                            .font(theme.font(13))
+                            .foregroundColor(theme.textSecondary)
+                            .lineLimit(1)
+                    }
 
                     Spacer(minLength: 4)
 
@@ -425,30 +417,34 @@ struct ChatRow: View {
                             .foregroundColor(theme.textSecondary)
                     }
 
-                    if chat.isMarkedAsUnread {
+                    if chat.isPinned {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(theme.textSecondary)
+                    }
+
+                    if chat.isMarkedAsUnread && chat.unreadCount == 0 {
                         Circle()
                             .fill(theme.accent.main)
                             .frame(width: 8, height: 8)
                     } else if chat.unreadCount > 0 {
                         Text("\(chat.unreadCount)")
                             .font(theme.font(10, weight: .bold))
-                            .foregroundColor(theme.accent.onAccent)
+                            .foregroundColor(chat.isMuted ? theme.textPrimary : theme.accent.onAccent)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
-                            .background(Capsule().fill(theme.accent.gradient))
+                            .background(Capsule().fill(chat.isMuted ? AnyShapeStyle(theme.field) : AnyShapeStyle(theme.accent.gradient)))
                     }
                 }
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, theme.compact ? 6 : 10)
-        .background(
-            RoundedRectangle(cornerRadius: theme.radius, style: .continuous)
-                .fill(theme.card)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: theme.radius, style: .continuous)
-                .stroke(chat.unreadCount > 0 ? theme.accent.main.opacity(0.25) : theme.separator.opacity(0.6), lineWidth: 1)
-        )
+        .padding(.horizontal, 16)
+        .padding(.vertical, CGFloat(theme.chatDensity.padding))
+        .background(theme.card)
+        .overlay(alignment: .bottom) {
+            if theme.profile.showsChatDividers != false {
+                Divider().overlay(theme.separator.opacity(0.5)).padding(.leading, theme.chatAvatar + 28)
+            }
+        }
     }
 }

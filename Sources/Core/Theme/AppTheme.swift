@@ -126,7 +126,7 @@ final class ThemeManager: ObservableObject {
         self.defaults = defaults
         if let data = defaults.data(forKey: Self.storageKey),
            let saved = try? JSONDecoder().decode(ThemeSelection.self, from: data) {
-            state = ThemeSelection(preset: saved.preset, custom: saved.custom?.validated)
+            state = ThemeSelection(preset: saved.preset, custom: saved.custom?.validated, saved: saved.saved)
         } else if ["accent", "appearance", "wallpaper", "bubbleStyle", "fontScale", "largeEmoji", "animations"]
             .contains(where: { defaults.object(forKey: "theme.\($0)") != nil }) {
             var profile = ThemePreset.neonPulse.profile
@@ -157,6 +157,7 @@ final class ThemeManager: ObservableObject {
     var preset: ThemePreset { state.preset }
     var profile: ThemeProfile { state.active }
     var customProfile: ThemeProfile? { state.custom }
+    var savedThemes: [SavedTheme] { state.saved ?? [] }
 
     func select(_ preset: ThemePreset) {
         guard preset != self.preset else { return }
@@ -173,8 +174,12 @@ final class ThemeManager: ObservableObject {
     }
 
     func resetCustom() {
-        state = ThemeSelection(preset: .custom, custom: ThemePreset.neonPulse.profile)
+        state = ThemeSelection(preset: .custom, custom: ThemePreset.neonPulse.profile, saved: state.saved)
     }
+
+    func saveTheme(_ name: String, replacing id: UUID? = nil) { state.save(name, replacing: id) }
+    func applyTheme(_ id: UUID) { state.applySaved(id) }
+    func deleteTheme(_ id: UUID) { state.deleteSaved(id) }
 
     private static var wallpaperURL: URL? {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
@@ -220,10 +225,14 @@ final class ThemeManager: ObservableObject {
     var fontScale: Double { profile.fontScale }
     var largeEmoji: Bool { profile.largeEmoji }
     var animations: Bool { profile.motion }
-    var compact: Bool { profile.compact }
+    var chatDensity: ChatDensity { profile.chatDensity ?? (profile.compact ? .compact : .standard) }
+    var compact: Bool { chatDensity == .compact }
+    var chatAvatar: CGFloat { CGFloat(chatDensity.avatar * (profile.avatarScale ?? 1)) }
+    var composerRadius: CGFloat { CGFloat(profile.composerRadius ?? profile.radius) }
+    var composerControl: CGFloat { 44 * CGFloat(profile.composerScale ?? 1) }
     var glow: Double { profile.glow }
     var radius: CGFloat { CGFloat(profile.radius) }
-    var bubbleCorner: CGFloat { bubbleStyle == .classic ? min(14, radius) : radius }
+    var bubbleCorner: CGFloat { profile.messageRadius.map { CGFloat($0) } ?? (bubbleStyle == .classic ? min(14, radius) : radius) }
 
     var accent: ThemeTint {
         ThemeTint(start: profile.accentStart, end: profile.accentEnd,
@@ -246,7 +255,8 @@ final class ThemeManager: ObservableObject {
                  light: ThemeContrast.readable(0x5C6570, on: profile.lightSurface))
     }
     var separator: Color { textPrimary.opacity(0.17) }
-    var incomingBubble: Color { card }
+    var incomingBubble: Color { profile.incomingColor.map { Color(hex: $0) } ?? card }
+    var incomingText: Color { profile.incomingColor.map { Color(hex: ThemeContrast.foreground(on: $0)) } ?? textPrimary }
     var field: Color {
         .dynamic(dark: ThemeContrast.mix(profile.darkSurface, ThemeContrast.foreground(on: profile.darkSurface), amount: 0.07),
                  light: ThemeContrast.mix(profile.lightSurface, ThemeContrast.foreground(on: profile.lightSurface), amount: 0.06))
@@ -261,7 +271,7 @@ final class ThemeManager: ObservableObject {
     }
 
     func animation(_ animation: Animation, reduced: Bool) -> Animation? {
-        animations && !reduced ? animation : nil
+        animations && !reduced ? animation.speed(profile.animationSpeed ?? 1) : nil
     }
 
     var textFont: Font { font(15) }

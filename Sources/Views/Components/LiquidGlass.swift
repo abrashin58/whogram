@@ -98,15 +98,16 @@ struct MessageSurface: View {
         let neon = outgoing && theme.profile.surface == .neon
         if outgoing {
             shape.fill(theme.outgoingGradient)
-                .overlay(shape.strokeBorder(.black.opacity(neon ? 0.9 : 0), lineWidth: 2))
+                .overlay(shape.strokeBorder(theme.outgoingText.opacity(neon ? 0.85 : (theme.profile.outlinedBubbles == true ? 0.35 : 0)), lineWidth: neon ? 2 : 1))
                 .shadow(color: theme.accent.secondary.opacity(neon && !reduceTransparency ? theme.glow * 0.6 : 0),
                         radius: 6, y: 2)
-        } else if theme.bubbleStyle == .glass && !reduceTransparency {
+        } else if theme.bubbleStyle == .glass && !reduceTransparency && theme.profile.incomingColor == nil {
             shape.fill(.regularMaterial)
                 .background(theme.incomingBubble.opacity(0.75), in: shape)
                 .overlay(shape.strokeBorder(theme.separator))
         } else {
             shape.fill(theme.incomingBubble)
+                .overlay(shape.strokeBorder(theme.incomingText.opacity(theme.profile.outlinedBubbles == true ? 0.30 : 0)))
         }
     }
 }

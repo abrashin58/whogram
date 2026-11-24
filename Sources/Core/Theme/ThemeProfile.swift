@@ -55,6 +55,7 @@ enum ChatWallpaper: String, CaseIterable, Codable, Identifiable {
 struct ThemeSelection: Codable, Equatable {
     var preset: ThemePreset
     var custom: ThemeProfile?
+    var saved: [SavedTheme]?
 
     var active: ThemeProfile {
         preset == .custom ? (custom ?? ThemePreset.neonPulse.profile) : preset.profile
@@ -76,6 +77,48 @@ struct ThemeSelection: Codable, Equatable {
         change(&changed)
         custom = changed.validated
     }
+
+    mutating func save(_ name: String, replacing id: UUID? = nil) {
+        let trimmed = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
+        guard !trimmed.isEmpty else { return }
+        if let id, let index = saved?.firstIndex(where: { $0.id == id }) {
+            saved?[index].name = trimmed
+        } else if id == nil && (saved?.count ?? 0) < 24 {
+            var snapshot = active
+            snapshot.usesLocalPhoto = nil
+            saved = (saved ?? []) + [SavedTheme(id: UUID(), name: trimmed, profile: snapshot)]
+        }
+    }
+
+    mutating func applySaved(_ id: UUID) {
+        guard let saved = saved?.first(where: { $0.id == id }) else { return }
+        custom = saved.profile.validated
+        preset = .custom
+    }
+
+    mutating func deleteSaved(_ id: UUID) {
+        saved?.removeAll { $0.id == id }
+    }
+}
+
+struct SavedTheme: Codable, Equatable, Identifiable {
+    let id: UUID
+    var name: String
+    let profile: ThemeProfile
+}
+
+enum ChatDensity: String, Codable, CaseIterable, Identifiable {
+    case compact, standard, spacious
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .compact: return "Компактно"
+        case .standard: return "Стандартно"
+        case .spacious: return "Просторно"
+        }
+    }
+    var avatar: Double { self == .compact ? 42 : (self == .standard ? 53 : 62) }
+    var padding: Double { self == .compact ? 5 : (self == .standard ? 8 : 11) }
 }
 
 enum ThemePreset: String, CaseIterable, Codable, Identifiable {
@@ -182,6 +225,17 @@ struct ThemeProfile: Codable, Equatable {
     var usesLocalPhoto: Bool?
     var outgoingStart: UInt32?
     var outgoingEnd: UInt32?
+    var incomingColor: UInt32?
+    var messageRadius: Double?
+    var chatDensity: ChatDensity?
+    var avatarScale: Double?
+    var showsChatPreview: Bool?
+    var showsChatTime: Bool?
+    var showsChatDividers: Bool?
+    var outlinedBubbles: Bool?
+    var composerRadius: Double?
+    var composerScale: Double?
+    var animationSpeed: Double?
 
     init(
         _ darkBackground: UInt32, _ darkSurface: UInt32, _ lightBackground: UInt32,
@@ -211,6 +265,11 @@ struct ThemeProfile: Codable, Equatable {
         result.glow = Self.clamp(glow, to: 0...0.4, fallback: 0)
         result.fontScale = Self.clamp(fontScale, to: 0.85...1.3, fallback: 1)
         result.wallpaperStrength = Self.clamp(wallpaperStrength, to: 0...1, fallback: 1)
+        result.messageRadius = messageRadius.map { Self.clamp($0, to: 8...32, fallback: 16) }
+        result.avatarScale = avatarScale.map { Self.clamp($0, to: 0.8...1.2, fallback: 1) }
+        result.composerRadius = composerRadius.map { Self.clamp($0, to: 8...28, fallback: 18) }
+        result.composerScale = composerScale.map { Self.clamp($0, to: 1...1.3, fallback: 1) }
+        result.animationSpeed = animationSpeed.map { Self.clamp($0, to: 0.5...1.5, fallback: 1) }
         return result
     }
 
@@ -220,6 +279,15 @@ struct ThemeProfile: Codable, Equatable {
 }
 
 enum ThemeContrast {
+    static func parseHex(_ input: String) -> UInt32? {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let digits = trimmed.hasPrefix("#") ? String(trimmed.dropFirst()) : trimmed
+        guard digits.utf8.count == 6,
+              digits.utf8.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) })
+        else { return nil }
+        return UInt32(digits, radix: 16)
+    }
+
     static func luminance(_ rgb: UInt32) -> Double {
         func linear(_ shift: UInt32) -> Double {
             let value = Double((rgb >> shift) & 255) / 255

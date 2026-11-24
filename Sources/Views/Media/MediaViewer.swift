@@ -16,6 +16,9 @@ struct MediaViewerView: View {
     @State private var lastScale: CGFloat = 1
     @State private var showControls = true
     @State private var quickLookURL: URL?
+    @State private var photoImage: UIImage?
+    @State private var photoPath: String?
+    @State private var photoLoadFinished = false
 
     private var path: String? { tdlib.filePath(message.mediaFileID) }
     private var isGIF: Bool { message.mimeType == "image/gif" || path?.lowercased().hasSuffix(".gif") == true }
@@ -42,6 +45,16 @@ struct MediaViewerView: View {
         .background(ThemeBackdrop())
         .quickLookPreview($quickLookURL)
         .onAppear(perform: download)
+        .task(id: path) {
+            guard message.kind == .photo, let path else { return }
+            photoPath = nil
+            photoLoadFinished = false
+            let loaded = await ImageCache.shared.image(at: path, maxPixels: 2560)
+            guard !Task.isCancelled else { return }
+            photoImage = loaded
+            photoPath = path
+            photoLoadFinished = true
+        }
     }
 
     private var toolbar: some View {
@@ -98,7 +111,7 @@ struct MediaViewerView: View {
 
     @ViewBuilder
     private func photo(_ path: String) -> some View {
-        if let image = ImageCache.shared.image(at: path) {
+        if let image = photoImage, photoPath == path {
             Image(uiImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
@@ -117,8 +130,10 @@ struct MediaViewerView: View {
                 .accessibilityAction(named: Text(showControls ? "Скрыть кнопки" : "Показать кнопки")) {
                     showControls.toggle()
                 }
-        } else {
+        } else if photoLoadFinished && photoPath == path {
             ThemeEmptyState(icon: "photo", title: "Не удалось открыть фото", detail: "Файл можно сохранить через кнопку «Поделиться».")
+        } else {
+            ProgressView("Открываем фотографию…")
         }
     }
 

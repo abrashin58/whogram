@@ -20,8 +20,8 @@ struct MessageBubble: View {
 
     private var isOutgoing: Bool { message.isOutgoing }
     private var isFloatingEmoji: Bool { message.emojiOnly && theme.largeEmoji && message.reply == nil }
-    private var textColor: Color { isOutgoing ? theme.outgoingText : theme.textPrimary }
-    private var footerColor: Color { isOutgoing ? theme.outgoingText.opacity(0.72) : theme.textSecondary }
+    private var textColor: Color { isOutgoing ? theme.outgoingText : theme.incomingText }
+    private var footerColor: Color { isOutgoing || theme.profile.incomingColor != nil ? textColor.opacity(0.78) : theme.textSecondary }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
@@ -118,7 +118,8 @@ struct MessageBubble: View {
                     fileID: message.kind == .photo ? message.mediaFileID : nil,
                     previewFileID: message.previewFileID,
                     previewData: message.previewData,
-                    priority: 16
+                    priority: 16,
+                    allowsRetry: true
                 )
                 .frame(width: mediaWidth, height: mediaHeight)
 

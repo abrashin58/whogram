@@ -12,6 +12,11 @@ struct AppearanceView: View {
     @State private var wallpaperItem: PhotosPickerItem?
     @State private var wallpaperFailure: String?
     @State private var loadingPhoto = false
+    @State private var namingPreset = false
+    @State private var presetName = ""
+    @State private var presetToRename: UUID?
+    @State private var presetToApply: SavedTheme?
+    @State private var presetToDelete: SavedTheme?
     var destination: Destination = .themes
 
     var body: some View {
@@ -22,6 +27,7 @@ struct AppearanceView: View {
                     section("Коллекция тем", icon: "square.grid.2x2") { presets }
                         .id(Destination.themes)
                     if theme.preset != .custom { copyControl }
+                    section("Мои пресеты", icon: "bookmark") { savedPresets }
                     Group {
                         section("Цвета", icon: "paintpalette") { colors }
                         section("Поверхности и сообщения", icon: "square.stack.3d.up") { surfaces }
@@ -30,6 +36,8 @@ struct AppearanceView: View {
                         section("Типографика", icon: "textformat.size") { typography }
                             .id(Destination.typography)
                         section("Движение и плотность", icon: "waveform.path") { effects }
+                        section("Список чатов", icon: "list.bullet") { chatListControls }
+                        section("Панель ввода", icon: "keyboard") { composerControls }
                     }
                     .disabled(theme.preset != .custom)
 
@@ -41,8 +49,11 @@ struct AppearanceView: View {
                 }
                 .padding(16)
             }
-            .onAppear {
-                if destination != .themes { proxy.scrollTo(destination, anchor: .top) }
+            .task(id: destination) {
+                await Task.yield()
+                if destination != .themes, !Task.isCancelled {
+                    proxy.scrollTo(destination, anchor: .top)
+                }
             }
         }
         .background(ThemeBackdrop())
@@ -58,6 +69,24 @@ struct AppearanceView: View {
             Button("Заменить", role: .destructive) { theme.copyToCustom() }
         } message: {
             Text("Настройки текущего пресета станут основой для Custom.")
+        }
+        .alert(presetToRename == nil ? "Новый пресет" : "Переименовать пресет", isPresented: $namingPreset) {
+            TextField("Название", text: $presetName)
+            Button("Сохранить") { theme.saveTheme(presetName, replacing: presetToRename) }
+                .disabled(presetName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Отмена", role: .cancel) {}
+        }
+        .confirmationDialog("Заменить текущую Custom?", isPresented: Binding(
+            get: { presetToApply != nil }, set: { if !$0 { presetToApply = nil } }
+        ), presenting: presetToApply) { preset in
+            Button("Применить «\(preset.name)»") { theme.applyTheme(preset.id) }
+        } message: { _ in
+            Text("Сохранённые пресеты останутся без изменений.")
+        }
+        .confirmationDialog("Удалить пресет?", isPresented: Binding(
+            get: { presetToDelete != nil }, set: { if !$0 { presetToDelete = nil } }
+        ), presenting: presetToDelete) { preset in
+            Button("Удалить «\(preset.name)»", role: .destructive) { theme.deleteTheme(preset.id) }
         }
         .alert("Не удалось сохранить обои", isPresented: Binding(
             get: { wallpaperFailure != nil }, set: { if !$0 { wallpaperFailure = nil } }
@@ -108,10 +137,52 @@ struct AppearanceView: View {
                     .accentSurface(Capsule())
             }
             .buttonStyle(ThemePressStyle())
+            if theme.customProfile != nil {
+                Button("Редактировать сохранённую Custom") { theme.select(.custom) }
+                    .frame(minHeight: 44)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
         .liquidGlass(corner: theme.radius)
+    }
+
+    private var savedPresets: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Сохраняет настройки текущей темы; фото из галереи не копируется в пресет.")
+                .font(theme.smallFont).foregroundStyle(theme.textSecondary)
+            Button {
+                presetToRename = nil
+                presetName = theme.preset.title
+                namingPreset = true
+            } label: {
+                Label("Сохранить текущую тему", systemImage: "plus")
+                    .frame(minHeight: 44)
+            }
+            .disabled(theme.savedThemes.count >= 24)
+            ForEach(theme.savedThemes) { preset in
+                HStack {
+                    Button {
+                        if theme.customProfile == nil { theme.applyTheme(preset.id) }
+                        else { presetToApply = preset }
+                    } label: {
+                        Label(preset.name, systemImage: "paintpalette")
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    }
+                    Menu {
+                        Button("Переименовать") {
+                            presetToRename = preset.id
+                            presetName = preset.name
+                            namingPreset = true
+                        }
+                        Button("Удалить", role: .destructive) { presetToDelete = preset }
+                    } label: {
+                        Image(systemName: "ellipsis.circle").frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("Действия с пресетом \(preset.name)")
+                }
+            }
+        }
     }
 
     private var preview: some View {
@@ -138,7 +209,7 @@ struct AppearanceView: View {
             VStack(spacing: theme.compact ? 4 : 9) {
                 Text("Как выглядит новая тема?")
                     .font(theme.textFont)
-                    .foregroundStyle(theme.textPrimary)
+                    .foregroundStyle(theme.incomingText)
                     .padding(10)
                     .background(MessageSurface(outgoing: false))
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -222,6 +293,9 @@ struct AppearanceView: View {
             }
             color("Акцент: начало", \.accentStart)
             color("Акцент: конец", \.accentEnd)
+            DisclosureGroup("Акцент в HEX") {
+                HexColorEditor(value: bind(\.accentStart))
+            }
             DisclosureGroup("Фоны и поверхности") {
                 VStack(spacing: 12) {
                     color("Фон в тёмном режиме", \.darkBackground)
@@ -244,6 +318,16 @@ struct AppearanceView: View {
             }
             slider("Скругление", value: \.radius, range: 8...32, step: 1, format: { "\(Int($0)) pt" })
             slider("Свечение", value: \.glow, range: 0...0.4, step: 0.02)
+            slider("Скругление сообщений", value: optional(\.messageRadius, fallback: Double(theme.bubbleCorner)),
+                   range: 8...32, step: 1, format: { "\(Int($0)) pt" })
+            Toggle("Обводка пузырьков", isOn: optional(\.outlinedBubbles, fallback: false))
+            Toggle("Отдельный цвет входящих", isOn: Binding(
+                get: { theme.profile.incomingColor != nil },
+                set: { enabled in theme.edit { $0.incomingColor = enabled ? $0.darkSurface : nil } }
+            ))
+            if theme.profile.incomingColor != nil {
+                color("Цвет входящих", \.incomingColor, fallback: theme.profile.darkSurface)
+            }
             Toggle("Отдельный цвет исходящих", isOn: Binding(
                 get: { theme.profile.outgoingStart != nil },
                 set: { enabled in
@@ -323,7 +407,28 @@ struct AppearanceView: View {
     private var effects: some View {
         VStack(spacing: 12) {
             Toggle("Пружины и переходы", isOn: bind(\.motion))
-            Toggle("Компактный список чатов", isOn: bind(\.compact))
+            slider("Скорость", value: optional(\.animationSpeed, fallback: 1), range: 0.5...1.5, step: 0.1)
+                .disabled(!theme.animations)
+        }
+    }
+
+    private var chatListControls: some View {
+        VStack(spacing: 12) {
+            Picker("Плотность", selection: optional(\.chatDensity, fallback: theme.chatDensity)) {
+                ForEach(ChatDensity.allCases) { Text($0.title).tag($0) }
+            }
+            slider("Размер аватара", value: optional(\.avatarScale, fallback: 1), range: 0.8...1.2, step: 0.05)
+            Toggle("Предпросмотр сообщения", isOn: optional(\.showsChatPreview, fallback: true))
+            Toggle("Время", isOn: optional(\.showsChatTime, fallback: true))
+            Toggle("Разделители", isOn: optional(\.showsChatDividers, fallback: true))
+        }
+    }
+
+    private var composerControls: some View {
+        VStack(spacing: 12) {
+            slider("Скругление панели", value: optional(\.composerRadius, fallback: Double(theme.composerRadius)),
+                   range: 8...28, step: 1, format: { "\(Int($0)) pt" })
+            slider("Размер кнопок", value: optional(\.composerScale, fallback: 1), range: 1...1.3, step: 0.05)
         }
     }
 
@@ -345,20 +450,32 @@ struct AppearanceView: View {
         Binding(get: { theme.profile[keyPath: key] }, set: { value in theme.edit { $0[keyPath: key] = value } })
     }
 
+    private func optional<Value>(_ key: WritableKeyPath<ThemeProfile, Value?>, fallback: Value) -> Binding<Value> {
+        Binding(get: { theme.profile[keyPath: key] ?? fallback },
+                set: { value in theme.edit { $0[keyPath: key] = value } })
+    }
+
     private func slider(
         _ title: String, value: WritableKeyPath<ThemeProfile, Double>, range: ClosedRange<Double>,
         step: Double, format: @escaping (Double) -> String = { "\(Int(($0 * 100).rounded()))%" }
+    ) -> some View {
+        slider(title, value: bind(value), range: range, step: step, format: format)
+    }
+
+    private func slider(
+        _ title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double,
+        format: @escaping (Double) -> String = { "\(Int(($0 * 100).rounded()))%" }
     ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack {
                 Text(title)
                 Spacer()
-                Text(format(theme.profile[keyPath: value])).monospacedDigit().foregroundStyle(theme.textSecondary)
+                Text(format(value.wrappedValue)).monospacedDigit().foregroundStyle(theme.textSecondary)
             }
             .accessibilityHidden(true)
-            Slider(value: bind(value), in: range, step: step)
+            Slider(value: value, in: range, step: step)
                 .accessibilityLabel(title)
-                .accessibilityValue(format(theme.profile[keyPath: value]))
+                .accessibilityValue(format(value.wrappedValue))
         }
     }
 
@@ -374,6 +491,27 @@ struct AppearanceView: View {
             get: { Color(hex: theme.profile[keyPath: key] ?? fallback) },
             set: { value in if let rgb = value.rgb { theme.edit { $0[keyPath: key] = rgb } } }
         ), supportsOpacity: false)
+    }
+}
+
+private struct HexColorEditor: View {
+    @Binding var value: UInt32
+    @State private var input = ""
+
+    var body: some View {
+        HStack {
+            TextField("#RRGGBB", text: $input)
+                .textInputAutocapitalization(.characters)
+                .autocorrectionDisabled()
+                .accessibilityLabel("Цвет в формате HEX")
+            Button("Применить") {
+                if let rgb = ThemeContrast.parseHex(input) { value = rgb }
+            }
+            .disabled(ThemeContrast.parseHex(input) == nil)
+        }
+        .frame(minHeight: 44)
+        .onAppear { input = String(format: "#%06X", value) }
+        .onChange(of: value) { rgb in input = String(format: "#%06X", rgb) }
     }
 }
 

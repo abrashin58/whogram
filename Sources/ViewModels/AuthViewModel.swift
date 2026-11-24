@@ -4,14 +4,13 @@ final class AuthViewModel: ObservableObject {
     @Published var phone = "+7"
     @Published var code = ""
     @Published var password = ""
+    @Published var email = ""
+    @Published var emailCode = ""
 
     private var tdlib: TDLibManager { TDLibManager.shared }
 
     func submitPhone() {
-        tdlib.isLoading = true
-        tdlib.statusMessage = "Запрос авторизации..."
-        tdlib.errorMessage = nil
-        tdlib.send([
+        tdlib.submitAuthentication([
             "@type": "setAuthenticationPhoneNumber",
             "phone_number": phone,
             "settings": [
@@ -24,20 +23,26 @@ final class AuthViewModel: ObservableObject {
                 "firebase_authentication_settings": NSNull(),
                 "authentication_tokens": []
             ]
-        ])
+        ], status: "Запрос авторизации…")
     }
 
     func submitCode() {
-        tdlib.isLoading = true
-        tdlib.statusMessage = "Проверка кода..."
-        tdlib.errorMessage = nil
-        tdlib.send(["@type": "checkAuthenticationCode", "code": code])
+        tdlib.submitAuthentication(["@type": "checkAuthenticationCode", "code": code], status: "Проверка кода…")
     }
 
     func submitPassword() {
-        tdlib.isLoading = true
-        tdlib.statusMessage = "Проверка пароля..."
-        tdlib.errorMessage = nil
-        tdlib.send(["@type": "checkAuthenticationPassword", "password": password])
+        tdlib.submitAuthentication(["@type": "checkAuthenticationPassword", "password": password], status: "Проверка пароля…")
+    }
+
+    func submitEmail() {
+        tdlib.submitAuthentication(["@type": "setAuthenticationEmailAddress", "email_address": email],
+                                    status: "Отправляем код на почту…")
+    }
+
+    func submitEmailCode() {
+        tdlib.submitAuthentication([
+            "@type": "checkAuthenticationEmailCode",
+            "code": ["@type": "emailAddressAuthenticationCode", "code": emailCode]
+        ], status: "Проверка кода…")
     }
 }

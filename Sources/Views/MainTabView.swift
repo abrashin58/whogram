@@ -12,6 +12,7 @@ struct MainTabView: View {
     enum MainTab: String, CaseIterable, Identifiable {
         case chats
         case search
+        case design
         case settings
 
         var id: String { rawValue }
@@ -20,6 +21,7 @@ struct MainTabView: View {
             switch self {
             case .chats: return "Чаты"
             case .search: return "Поиск"
+            case .design: return "Design Lab"
             case .settings: return "Настройки"
             }
         }
@@ -28,6 +30,7 @@ struct MainTabView: View {
             switch self {
             case .chats: return "bubble.left.and.bubble.right.fill"
             case .search: return "magnifyingglass"
+            case .design: return "paintpalette.fill"
             case .settings: return "gearshape.fill"
             }
         }
@@ -51,6 +54,8 @@ struct MainTabView: View {
                         chatsPath.append(id)
                         select(.chats)
                     }
+                case .design:
+                    NavigationStack { AppearanceView() }
                 case .settings:
                     SettingsView()
                 }
@@ -83,6 +88,12 @@ struct MainTabView: View {
                 .padding(.top, 6)
                 .padding(.horizontal, 20)
                 .transition(.move(edge: .top).combined(with: .opacity))
+            } else if !tdlib.isSessionReady {
+                Label(tdlib.statusMessage, systemImage: "arrow.trianglehead.clockwise")
+                    .font(theme.smallFont)
+                    .padding(8)
+                    .background(theme.card, in: Capsule())
+                    .allowsHitTesting(false)
             }
         }
         .onChange(of: tdlib.errorMessage) { value in

@@ -5,7 +5,9 @@ struct CoreChecks {
     static func main() throws {
         checkVoiceWaveform()
         try checkThemes()
-        print("OK: пресеты, Custom, сохранение, контраст, кодирование голосовой дорожки")
+        try checkSessionFolders()
+        checkHistory()
+        print("OK: темы, HEX, хранилище сессии, курсор истории, звуковая волна")
     }
 
     static func checkVoiceWaveform() {
@@ -50,11 +52,56 @@ struct CoreChecks {
         let encoded = try JSONEncoder().encode(selection)
         let restored = try JSONDecoder().decode(ThemeSelection.self, from: encoded)
         precondition(restored == selection)
+        selection.save("  Тест  ")
+        let saved = selection.saved!.first!
+        precondition(saved.name == "Тест" && saved.profile.usesLocalPhoto == nil)
+        selection.save("Новое название", replacing: saved.id)
+        selection.editCustom { $0.fontScale = 0.9 }
+        selection.applySaved(saved.id)
+        precondition(selection.active.fontScale == custom.fontScale)
+        precondition(selection.saved?.first?.name == "Новое название")
+        let serialized = try JSONEncoder().encode(selection)
+        let roundTrip = try JSONDecoder().decode(ThemeSelection.self, from: serialized)
+        precondition(roundTrip == selection)
+        selection.deleteSaved(saved.id)
+        precondition(selection.saved?.isEmpty == true)
+        let legacy = try JSONDecoder().decode(ThemeSelection.self, from: Data(#"{"preset":"aurora"}"#.utf8))
+        precondition(legacy.preset == .aurora && legacy.saved == nil)
+        precondition(ThemeContrast.parseHex(" #af00BA ") == 0xAF00BA)
+        precondition(ThemeContrast.parseHex("GG0000") == nil && ThemeContrast.parseHex("123") == nil)
 
         for base: UInt32 in [0, 0xFFFFFF, 0x858585, 0xFF0088, 0x152033] {
             let ink = ThemeContrast.foreground(on: base)
             precondition(ThemeContrast.ratio(ink, base) >= 4.5)
             precondition(ThemeContrast.ratio(ThemeContrast.readable(0xA5B0BC, on: base), base) >= 4.5)
         }
+    }
+
+    static func checkSessionFolders() throws {
+        let fm = FileManager.default
+        let documents = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: documents) }
+        let first = try SessionFolders.prepare(documents: documents)
+        let marker = first.database.appendingPathComponent("existing")
+        let data = Data([7, 18])
+        try data.write(to: marker)
+        let second = try SessionFolders.prepare(documents: documents)
+        precondition(first.database == second.database && first.files == second.files)
+        precondition(second.database.path.hasSuffix("/Whogram/Database") && second.files.path.hasSuffix("/Whogram/Files"))
+        let persisted = try Data(contentsOf: marker)
+        precondition(persisted == data)
+        do {
+            _ = try SessionFolders.prepare(documents: marker)
+            preconditionFailure("Ожидалась ошибка создания каталога")
+        } catch {
+            precondition(fm.fileExists(atPath: marker.path))
+        }
+    }
+
+    static func checkHistory() {
+        precondition(HistoryPage.progress(ids: [90, 82, 82, -8, 70], from: 0) == .older(70))
+        precondition(HistoryPage.progress(ids: [71, 70, 60], from: 70) == .older(60))
+        precondition(HistoryPage.progress(ids: [71, 70], from: 70) == .end)
+        precondition(HistoryPage.progress(ids: [], from: 0) == .end)
     }
 }

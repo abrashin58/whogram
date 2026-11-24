@@ -8,15 +8,22 @@ struct TdImage: View {
     var showsPlaceholder = true
     var contentMode: ContentMode = .fill
     var fallbackEmoji: String? = nil
+    var maxPixels = 768
+    var allowsRetry = false
 
     @EnvironmentObject var tdlib: TDLibManager
     @EnvironmentObject private var theme: ThemeManager
+    @State private var decoded: UIImage?
+    @State private var decodedPath: String?
     private struct Files: Equatable { let full: Int32?; let preview: Int32? }
+    private struct Paths: Equatable { let full: String?; let preview: String?; let maxPixels: Int }
 
-    private var image: UIImage? {
-        if let path = tdlib.filePath(fileID), let full = ImageCache.shared.image(at: path) { return full }
-        if let path = tdlib.filePath(previewFileID) { return ImageCache.shared.image(at: path) }
-        return nil
+    private var paths: Paths {
+        Paths(full: tdlib.filePath(fileID), preview: tdlib.filePath(previewFileID), maxPixels: maxPixels)
+    }
+    private var image: UIImage? { decodedPath == paths.full || decodedPath == paths.preview ? decoded : nil }
+    private var failedID: Int32? {
+        [fileID, previewFileID].compactMap { $0 }.first { tdlib.downloadErrors[$0] != nil }
     }
 
     var body: some View {
@@ -36,6 +43,16 @@ struct TdImage: View {
             } else {
                 placeholder
             }
+            if allowsRetry, let failedID, failedID == fileID || image == nil {
+                Button {
+                    tdlib.downloadFile(failedID, priority: priority)
+                } label: {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 16, weight: .semibold))
+                        .frame(width: 44, height: 44).background(.regularMaterial, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Повторить загрузку изображения")
+            }
         }
         .clipped()
         .task(id: Files(full: fileID, preview: previewFileID)) {
@@ -43,6 +60,20 @@ struct TdImage: View {
                 tdlib.downloadFile(previewFileID, priority: priority)
             }
             if let fileID { tdlib.downloadFile(fileID, priority: priority) }
+        }
+        .task(id: paths) {
+            let requested = paths
+            for path in [requested.full, requested.preview].compactMap({ $0 }) {
+                if let loaded = await ImageCache.shared.image(at: path, maxPixels: requested.maxPixels) {
+                    guard !Task.isCancelled else { return }
+                    decoded = loaded
+                    decodedPath = path
+                    return
+                }
+            }
+            guard !Task.isCancelled else { return }
+            decoded = nil
+            decodedPath = nil
         }
     }
 

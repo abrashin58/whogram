@@ -21,7 +21,8 @@ struct AvatarView: View {
         ZStack(alignment: .bottomTrailing) {
             ZStack {
                 if fileID != nil || preview != nil {
-                    TdImage(fileID: fileID, previewFileID: nil, previewData: preview, priority: 16)
+                    TdImage(fileID: fileID, previewFileID: nil, previewData: preview,
+                            priority: 12, maxPixels: 224)
                         .frame(width: size, height: size)
                         .clipShape(Circle())
                 } else {

@@ -1,7 +1,7 @@
 import Combine
 import Foundation
-import class TDLibKit.TdClientImpl
-import protocol TDLibKit.TdClient
+import class TDLibKit.TDLibClient
+import class TDLibKit.TDLibClientManager
 import protocol TDLibKit.TdQuery
 
 private struct TDRequestError: LocalizedError {
@@ -13,7 +13,13 @@ private struct TDRequestError: LocalizedError {
 final class TDLibManager: ObservableObject {
     static let shared = TDLibManager()
 
-    private var client: TdClient!
+    private let transport = TDLibClientManager()
+    private var client: TDLibClient?
+    private var reconnectOnClose = true
+    private var initializingDatabase = false
+    private var sessionEnding = false
+    private var openChats: Set<Int64> = []
+    private var downloadPriorities: [Int32: Int32] = [:]
 
     // Авторизация
     @Published var authorizationState = "authorizationStateWaitTdlibParameters"
@@ -24,6 +30,7 @@ final class TDLibManager: ObservableObject {
     @Published var authCodePhone: String?
     @Published var authCodeLength: Int = 0
     @Published var passwordHint: String?
+    var isSessionReady: Bool { authorizationState == "authorizationStateReady" && !sessionEnding }
 
     // Данные
     @Published var chats: [RealChat] = []
@@ -34,6 +41,8 @@ final class TDLibManager: ObservableObject {
     @Published private(set) var isLoadingChats = false
     @Published private(set) var loadingHistory: Set<Int64> = []
     @Published private(set) var exhaustedHistory: Set<Int64> = []
+    @Published private(set) var historyErrors: [Int64: String] = [:]
+    private var olderHistoryCursor: [Int64: Int64] = [:]
 
     // Файлы и стикеры
     @Published var filePaths: [Int32: String] = [:]
@@ -53,11 +62,35 @@ final class TDLibManager: ObservableObject {
     private var messageSearchTicket = UUID()
 
     private init() {
-        client = TdClientImpl(completionQueue: .main)
-        client.run { [weak self] data in
+        startClient()
+    }
+
+    private func startClient() {
+        guard client == nil else { return }
+        sessionEnding = false
+        initializingDatabase = false
+        loadingHistory = []
+        isLoadingChats = false
+        downloading = []
+        downloadPriorities = [:]
+        downloadProgress = [:]
+        isLoading = true
+        authorizationState = "authorizationStateWaitTdlibParameters"
+        errorMessage = nil
+        statusMessage = "Открываем сохранённую сессию…"
+        client = transport.createClient { [weak self] data, source in
             DispatchQueue.main.async {
-                self?.handleUpdate(data)
+                guard let self, self.client?.id == source.id else { return }
+                self.handleUpdate(data)
             }
+        }
+    }
+
+    func retrySession() {
+        if client == nil {
+            startClient()
+        } else if authorizationState == "authorizationStateWaitTdlibParameters" {
+            setParameters()
         }
     }
 
@@ -78,6 +111,7 @@ final class TDLibManager: ObservableObject {
             errorMessage = "Ошибка формирования запроса"
             return
         }
+        guard let client, !sessionEnding, authorizationState == "authorizationStateReady" else { return }
         do {
             try client.send(query: RawTdQuery(object: object), completion: nil)
         } catch {
@@ -87,23 +121,34 @@ final class TDLibManager: ObservableObject {
 
     private func request(
         _ object: [String: Any],
+        duringAuthorization: Bool = false,
         completion: @escaping (Result<[String: Any], Swift.Error>) -> Void
     ) {
         guard JSONSerialization.isValidJSONObject(object) else {
             completion(.failure(TDRequestError(code: 0, message: "Ошибка формирования запроса")))
             return
         }
+        guard let client, !sessionEnding, duringAuthorization || authorizationState == "authorizationStateReady" else {
+            completion(.failure(TDRequestError(code: 0, message: "Сессия TDLib недоступна")))
+            return
+        }
+        let clientID = client.id
         do {
-            try client.send(query: RawTdQuery(object: object)) { data in
-                guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-                    completion(.failure(TDRequestError(code: 0, message: "Не удалось прочитать ответ TDLib")))
-                    return
-                }
-                if json["@type"] as? String == "error" {
-                    completion(.failure(TDRequestError(code: (json["code"] as? NSNumber)?.intValue ?? 0,
-                                                       message: json["message"] as? String ?? "Ошибка TDLib")))
+            try client.send(query: RawTdQuery(object: object)) { [weak self] data in
+                let result: Result<[String: Any], Swift.Error>
+                if let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                    if json["@type"] as? String == "error" {
+                        result = .failure(TDRequestError(code: (json["code"] as? NSNumber)?.intValue ?? 0,
+                                                         message: json["message"] as? String ?? "Ошибка TDLib"))
+                    } else {
+                        result = .success(json)
+                    }
                 } else {
-                    completion(.success(json))
+                    result = .failure(TDRequestError(code: 0, message: "Не удалось прочитать ответ TDLib"))
+                }
+                DispatchQueue.main.async {
+                    guard let self, self.client?.id == clientID, !self.sessionEnding else { return }
+                    completion(result)
                 }
             }
         } catch {
@@ -126,6 +171,24 @@ final class TDLibManager: ObservableObject {
         case "updateAuthorizationState":
             if let state = json["authorization_state"] as? [String: Any] {
                 handleAuthState(state)
+            }
+
+        case "updateConnectionState":
+            guard isAuthorized, !sessionEnding,
+                  let state = json["state"] as? [String: Any] else { return }
+            switch state["@type"] as? String {
+            case "connectionStateWaitingForNetwork": statusMessage = "Ожидание сети…"
+            case "connectionStateConnecting", "connectionStateConnectingToProxy": statusMessage = "Подключение…"
+            case "connectionStateUpdating": statusMessage = "Синхронизация…"
+            case "connectionStateReady":
+                let recovered = statusMessage != "Подключено"
+                statusMessage = "Подключено"
+                if recovered {
+                    for id in openChats where messages[id]?.isEmpty != false {
+                        refreshHistory(chatID: id)
+                    }
+                }
+            default: break
             }
 
         case "updateNewChat":
@@ -338,9 +401,6 @@ final class TDLibManager: ObservableObject {
         let code = int(json["code"]) ?? 0
 
         errorMessage = "\(code): \(message)"
-        if isLoading && !isAuthorized {
-            isLoading = false
-        }
     }
 
     // MARK: - Авторизация
@@ -360,6 +420,15 @@ final class TDLibManager: ObservableObject {
             statusMessage = "Введите номер телефона"
             isLoading = false
 
+        case "authorizationStateWaitEmailAddress":
+            statusMessage = "Введите адрес электронной почты"
+            isLoading = false
+
+        case "authorizationStateWaitEmailCode":
+            authCodePhone = (state["code_info"] as? [String: Any])?["email_address_pattern"] as? String
+            statusMessage = "Введите код из электронной почты"
+            isLoading = false
+
         case "authorizationStateWaitCode":
             let info = state["code_info"] as? [String: Any]
             authCodePhone = info?["phone_number"] as? String
@@ -373,6 +442,7 @@ final class TDLibManager: ObservableObject {
             isLoading = false
 
         case "authorizationStateReady":
+            reconnectOnClose = true
             isAuthorized = true
             isLoading = false
             errorMessage = nil
@@ -380,13 +450,39 @@ final class TDLibManager: ObservableObject {
             loadChats()
             loadMe()
             loadRecentStickers()
+            for id in openChats {
+                send(["@type": "openChat", "chat_id": id])
+                refreshHistory(chatID: id)
+            }
+
+        case "authorizationStateLoggingOut":
+            sessionEnding = true
+            statusMessage = "Выход из аккаунта…"
+            isLoading = true
+
+        case "authorizationStateClosing":
+            sessionEnding = true
+            statusMessage = "Закрытие соединения…"
+            isLoading = true
 
         case "authorizationStateClosed":
-            resetSession()
-            statusMessage = "Соединение закрыто"
+            client = nil // TDLib has released the database and no longer accepts requests.
+            if reconnectOnClose {
+                reconnectOnClose = false
+                startClient()
+            } else {
+                statusMessage = "Соединение закрыто"
+                isLoading = false
+                isAuthorized = false
+            }
+
+        case "authorizationStateWaitOtherDeviceConfirmation":
+            statusMessage = "Подтвердите вход на другом устройстве"
             isLoading = false
 
         default:
+            statusMessage = "Этот способ авторизации пока не поддерживается"
+            isLoading = false
             break
         }
     }
@@ -402,6 +498,7 @@ final class TDLibManager: ObservableObject {
         users = [:]
         filePaths = [:]
         downloading = []
+        downloadPriorities = [:]
         downloadProgress = [:]
         downloadErrors = [:]
         recentStickers = []
@@ -410,28 +507,37 @@ final class TDLibManager: ObservableObject {
         messageSearchResults = []
         searchChatIDs = []
         authCodePhone = nil
+        authCodeLength = 0
         passwordHint = nil
         me = nil
         myBio = ""
         loadingHistory = []
         exhaustedHistory = []
+        olderHistoryCursor = [:]
+        historyErrors = [:]
+        openChats = []
         isLoadingChats = false
+        ImageCache.shared.clear()
     }
 
     private func setParameters() {
-        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let dbPath = base.appendingPathComponent("Whogram/Database").path
-        let filesPath = base.appendingPathComponent("Whogram/Files").path
-
-        try? FileManager.default.createDirectory(atPath: dbPath, withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(atPath: filesPath, withIntermediateDirectories: true)
-
-        send([
+        guard !initializingDatabase else { return }
+        initializingDatabase = true
+        isLoading = true
+        errorMessage = nil
+        let folders: SessionFolders
+        do {
+            folders = try SessionFolders.prepare()
+        } catch {
+            failInitialization(error)
+            return
+        }
+        request([
             "@type": "setTdlibParameters",
             "api_id": Constants.apiId,
             "api_hash": Constants.apiHash,
-            "database_directory": dbPath,
-            "files_directory": filesPath,
+            "database_directory": folders.database.path,
+            "files_directory": folders.files.path,
             "database_encryption_key": "",
             "use_file_database": true,
             "use_chat_info_database": true,
@@ -442,19 +548,55 @@ final class TDLibManager: ObservableObject {
             "device_model": "iPhone",
             "system_version": "iOS",
             "application_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.0"
-        ])
+        ], duringAuthorization: true) { [weak self] result in
+            guard let self else { return }
+            self.initializingDatabase = false
+            if case let .failure(error) = result, self.authorizationState == "authorizationStateWaitTdlibParameters" {
+                self.failInitialization(error)
+            }
+        }
+    }
+
+    private func failInitialization(_ error: Swift.Error) {
+        initializingDatabase = false
+        isLoading = false
+        isAuthorized = false
+        statusMessage = "Не удалось открыть локальную сессию"
+        errorMessage = error.localizedDescription
     }
 
     func logOut() {
+        guard isAuthorized, !sessionEnding else { return }
         statusMessage = "Выход из аккаунта…"
-        send(["@type": "logOut"])
+        request(["@type": "logOut"]) { [weak self] result in
+            if case let .failure(error) = result {
+                self?.statusMessage = "Не удалось выйти"
+                self?.errorMessage = error.localizedDescription
+            }
+        }
     }
 
     func resendCode() {
-        send([
+        submitAuthentication([
             "@type": "resendAuthenticationCode",
             "reason": ["@type": "resendCodeReasonUserRequest"]
-        ])
+        ], status: "Запрашиваем новый код…")
+    }
+
+    func submitAuthentication(_ query: [String: Any], status: String) {
+        guard !isLoading else { return }
+        let state = authorizationState
+        isLoading = true
+        errorMessage = nil
+        statusMessage = status
+        request(query, duringAuthorization: true) { [weak self] result in
+            guard let self, self.authorizationState == state else { return }
+            self.isLoading = false
+            switch result {
+            case .success: self.statusMessage = "Ожидаем подтверждение Telegram…"
+            case .failure(let error): self.errorMessage = error.localizedDescription
+            }
+        }
     }
 
     // MARK: - Загрузка данных
@@ -525,22 +667,28 @@ final class TDLibManager: ObservableObject {
     }
 
     func openChat(_ chatID: Int64) {
+        guard openChats.insert(chatID).inserted else { return }
         send(["@type": "openChat", "chat_id": chatID])
         loadHistory(chatID: chatID, from: 0)
     }
 
     func closeChat(_ chatID: Int64) {
+        guard openChats.remove(chatID) != nil else { return }
         send(["@type": "closeChat", "chat_id": chatID])
     }
 
     func loadMoreMessages(chatID: Int64) {
         guard !exhaustedHistory.contains(chatID),
-              let first = messages[chatID]?.first(where: { $0.id > 0 }) else { return }
-        loadHistory(chatID: chatID, from: first.id)
+              let cursor = olderHistoryCursor[chatID] ?? messages[chatID]?.first(where: { $0.id > 0 })?.id
+        else { return }
+        loadHistory(chatID: chatID, from: cursor)
     }
 
+    func refreshHistory(chatID: Int64) { loadHistory(chatID: chatID, from: 0) }
+
     private func loadHistory(chatID: Int64, from messageID: Int64) {
-        guard loadingHistory.insert(chatID).inserted else { return }
+        guard isSessionReady, loadingHistory.insert(chatID).inserted else { return }
+        historyErrors.removeValue(forKey: chatID)
         request([
             "@type": "getChatHistory",
             "chat_id": chatID,
@@ -553,15 +701,27 @@ final class TDLibManager: ObservableObject {
             self.loadingHistory.remove(chatID)
             switch result {
             case .success(let json):
-                let parsed = (json["messages"] as? [[String: Any]] ?? []).compactMap(self.parseMessage)
+                guard let page = json["messages"] as? [[String: Any]] else {
+                    self.historyErrors[chatID] = "TDLib вернул некорректную историю."
+                    return
+                }
+                let parsed = page.compactMap(self.parseMessage)
                 self.mergeHistory(parsed, chatID: chatID)
-                if parsed.isEmpty || (messageID > 0 && !parsed.contains(where: { $0.id < messageID })) {
-                    self.exhaustedHistory.insert(chatID)
-                } else if messageID == 0 {
-                    self.exhaustedHistory.remove(chatID)
+                switch HistoryPage.progress(ids: page.compactMap { self.int64($0["id"]) }, from: messageID) {
+                case .older(let cursor):
+                    if let previous = self.olderHistoryCursor[chatID] {
+                        self.olderHistoryCursor[chatID] = min(previous, cursor)
+                    } else {
+                        self.olderHistoryCursor[chatID] = cursor
+                        self.exhaustedHistory.remove(chatID)
+                    }
+                case .end:
+                    if messageID != 0 || self.messages[chatID]?.isEmpty != false {
+                        self.exhaustedHistory.insert(chatID)
+                    }
                 }
             case .failure(let error):
-                self.errorMessage = error.localizedDescription
+                self.historyErrors[chatID] = error.localizedDescription
             }
         }
     }
@@ -961,9 +1121,14 @@ final class TDLibManager: ObservableObject {
     // MARK: - Файлы
 
     func downloadFile(_ fileID: Int32, priority: Int32 = 8) {
-        guard fileID != 0 else { return }
-        if filePaths[fileID] != nil { return }
-        if downloading.contains(fileID) { return }
+        guard fileID > 0, authorizationState == "authorizationStateReady" else { return }
+        if let path = filePaths[fileID] {
+            guard !FileManager.default.isReadableFile(atPath: path) else { return }
+            filePaths.removeValue(forKey: fileID)
+        }
+        let priority = min(max(priority, 1), 32)
+        if let active = downloadPriorities[fileID], active >= priority { return }
+        downloadPriorities[fileID] = priority
 
         downloading.insert(fileID)
         downloadErrors.removeValue(forKey: fileID)
@@ -975,11 +1140,12 @@ final class TDLibManager: ObservableObject {
             "limit": 0,
             "synchronous": false
         ]) { [weak self] result in
-            guard let self, self.isAuthorized else { return }
+            guard let self, self.isAuthorized, self.downloadPriorities[fileID] == priority else { return }
             switch result {
             case .success(let file): self.handleFile(file)
             case .failure(let error):
                 self.downloading.remove(fileID)
+                self.downloadPriorities.removeValue(forKey: fileID)
                 self.downloadProgress.removeValue(forKey: fileID)
                 self.downloadErrors[fileID] = error.localizedDescription
             }
@@ -1005,8 +1171,6 @@ final class TDLibManager: ObservableObject {
     private func applyUser(_ user: RealUser) {
         users[user.id] = user
         if me?.id == user.id {
-            me = user
-        } else if me == nil && user.id != 0 && user.firstName.isEmpty == false && user.phone.isEmpty == false {
             me = user
         }
     }
@@ -1165,8 +1329,10 @@ final class TDLibManager: ObservableObject {
 
     private func mergeHistory(_ parsed: [RealMessage], chatID: Int64) {
         var current = messages[chatID] ?? []
-        let known = Set(current.map { $0.id })
-        current.append(contentsOf: parsed.filter { !known.contains($0.id) })
+        var known = Set(current.map { $0.id })
+        let added = parsed.filter { known.insert($0.id).inserted }
+        guard !added.isEmpty else { return }
+        current.append(contentsOf: added)
         current.sort { $0.id < $1.id }
         messages[chatID] = current
     }
@@ -1350,18 +1516,27 @@ final class TDLibManager: ObservableObject {
                 filePaths[id] = path
             }
             downloading.remove(id)
+            downloadPriorities.removeValue(forKey: id)
             downloadProgress.removeValue(forKey: id)
             downloadErrors.removeValue(forKey: id)
-        } else if downloading.contains(id) {
-            if bool(local?["can_be_downloaded"]) == false && bool(local?["is_downloading_active"]) == false {
+        } else {
+            if let cached = filePaths[id], !FileManager.default.isReadableFile(atPath: cached) {
+                filePaths.removeValue(forKey: id)
+            }
+            guard downloading.contains(id), let local else { return }
+            if bool(local["is_downloading_active"]) == false {
                 downloading.remove(id)
+                downloadPriorities.removeValue(forKey: id)
                 downloadProgress.removeValue(forKey: id)
-                downloadErrors[id] = "Файл недоступен для загрузки."
+                downloadErrors[id] = bool(local["can_be_downloaded"]) == false
+                    ? "Файл недоступен для загрузки." : "Загрузка прервана. Попробуйте ещё раз."
             } else {
                 let total = max(int64(file["size"]) ?? 0, int64(file["expected_size"]) ?? 0)
                 if total > 0 {
-                    let progress = Double(int64(local?["downloaded_size"]) ?? 0) / Double(total)
-                    downloadProgress[id] = min(max(progress, 0), 1)
+                    let progress = min(max(Double(int64(local["downloaded_size"]) ?? 0) / Double(total), 0), 1)
+                    if progress == 1 || abs(progress - (downloadProgress[id] ?? 0)) >= 0.01 {
+                        downloadProgress[id] = progress
+                    }
                 }
             }
         }

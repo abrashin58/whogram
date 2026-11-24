@@ -30,6 +30,10 @@ struct ChatDetailView: View {
     @State private var searchTarget: Int64?
     @State private var olderSearchResult: RealMessage?
     @State private var stickerPack: StickerPackLink?
+    @State private var atLatest = true
+    @State private var nearHistoryStart = false
+    @State private var historyAnchor: Int64?
+    @State private var didPositionHistory = false
     @FocusState private var inputFocused: Bool
     @StateObject private var voiceRecorder = VoiceRecorder()
 
@@ -120,7 +124,7 @@ struct ChatDetailView: View {
             if let error { tdlib.errorMessage = error }
         }
         .onChange(of: messages.count) { _ in
-            tdlib.markAsRead(liveChat)
+            if atLatest { tdlib.markAsRead(liveChat) }
         }
         .sheet(isPresented: $showInfo) {
             ChatInfoView(chat: liveChat)
@@ -326,13 +330,14 @@ struct ChatDetailView: View {
                 LazyVStack(spacing: theme.compact ? 3 : 7) {
                     if messages.contains(where: { $0.id > 0 }) && !tdlib.exhaustedHistory.contains(chat.id) {
                         Button {
-                            tdlib.loadMoreMessages(chatID: chat.id)
+                            requestOlder()
                         } label: {
                             Group {
                                 if tdlib.loadingHistory.contains(chat.id) {
                                     ProgressView()
                                 } else {
-                                    Text("Загрузить ещё").font(theme.font(12, weight: .semibold))
+                                    Text(tdlib.historyErrors[chat.id] == nil ? "Более ранние сообщения" : "Повторить загрузку")
+                                        .font(theme.font(12, weight: .semibold))
                                 }
                             }
                             .foregroundStyle(theme.textPrimary)
@@ -343,12 +348,32 @@ struct ChatDetailView: View {
                         .buttonStyle(.plain)
                         .disabled(tdlib.loadingHistory.contains(chat.id))
                         .padding(.bottom, 4)
+                        .background {
+                            GeometryReader { row in
+                                Color.clear.preference(key: HistoryEdges.self, value: [
+                                    "start": row.frame(in: .named("history")).maxY
+                                ])
+                            }
+                        }
+                    }
+
+                    if let error = tdlib.historyErrors[chat.id] {
+                        VStack(spacing: 8) {
+                            Text("Не удалось загрузить историю").font(theme.textFont)
+                            Text(error).font(theme.smallFont).foregroundStyle(theme.textSecondary)
+                            if messages.isEmpty || tdlib.exhaustedHistory.contains(chat.id) {
+                                Button("Повторить") { tdlib.refreshHistory(chatID: chat.id) }
+                                    .frame(minHeight: 44)
+                            }
+                        }
+                        .multilineTextAlignment(.center)
+                        .padding(12)
                     }
 
                     if messages.isEmpty {
                         if tdlib.loadingHistory.contains(chat.id) {
                             ChatSkeleton(count: 4)
-                        } else {
+                        } else if tdlib.historyErrors[chat.id] == nil {
                             ThemeEmptyState(icon: "bubble.left.and.bubble.right", title: "Здесь пока тихо",
                                             detail: "В этом чате пока нет сообщений.")
                                 .padding(.top, 64)
@@ -374,10 +399,46 @@ struct ChatDetailView: View {
                     Color.clear
                         .frame(height: 4)
                         .id("bottom")
+                        .background {
+                            GeometryReader { row in
+                                Color.clear.preference(key: HistoryEdges.self, value: [
+                                    "end": row.frame(in: .named("history")).maxY
+                                ])
+                            }
+                        }
                 }
                 .padding(.horizontal, 10)
                 .padding(.top, 6)
                 .padding(.bottom, 4)
+            }
+            .coordinateSpace(name: "history")
+            .background {
+                GeometryReader { viewport in
+                    Color.clear.preference(key: HistoryEdges.self, value: ["height": viewport.size.height])
+                }
+            }
+            .onPreferenceChange(HistoryEdges.self) { edges in
+                guard let height = edges["height"], height > 0 else { return }
+                atLatest = edges["end"].map { $0 <= height + 40 } ?? messages.isEmpty
+                let nearTop = edges["start"].map { $0 >= -48 && $0 <= height } ?? false
+                if nearTop && !nearHistoryStart && !atLatest && didPositionHistory && tdlib.historyErrors[chat.id] == nil {
+                    requestOlder()
+                }
+                nearHistoryStart = nearTop
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if !atLatest && !messages.isEmpty {
+                    Button { scrollToBottom(proxy, animated: true) } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(theme.accent.onAccent)
+                            .frame(width: 44, height: 44)
+                            .accentSurface(Circle())
+                    }
+                    .buttonStyle(ThemePressStyle())
+                    .accessibilityLabel("К последним сообщениям")
+                    .padding(12)
+                }
             }
             .onAppear {
                 if let target = searchTarget {
@@ -389,9 +450,32 @@ struct ChatDetailView: View {
             }
             .onChange(of: messages.last?.id) { newID in
                 guard newID != nil else { return }
-                scrollToBottom(proxy, animated: true)
+                if !didPositionHistory || atLatest { scrollToBottom(proxy, animated: didPositionHistory) }
+            }
+            .onChange(of: atLatest) { latest in
+                if latest { tdlib.markAsRead(liveChat) }
+            }
+            .onChange(of: tdlib.loadingHistory.contains(chat.id)) { loading in
+                guard !loading, let anchor = historyAnchor else { return }
+                historyAnchor = nil
+                if messages.first?.id != anchor, messages.contains(where: { $0.id == anchor }) {
+                    DispatchQueue.main.async { proxy.scrollTo(anchor, anchor: .top) }
+                }
             }
         }
+    }
+
+    private struct HistoryEdges: PreferenceKey {
+        static let defaultValue: [String: CGFloat] = [:]
+        static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+            value.merge(nextValue(), uniquingKeysWith: { _, newer in newer })
+        }
+    }
+
+    private func requestOlder() {
+        guard !tdlib.loadingHistory.contains(chat.id), let first = messages.first?.id else { return }
+        historyAnchor = first
+        tdlib.loadMoreMessages(chatID: chat.id)
     }
 
     private func bubble(for message: RealMessage, showsSender: Bool) -> some View {
@@ -437,7 +521,7 @@ struct ChatDetailView: View {
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+        DispatchQueue.main.async {
             if animated {
                 withAnimation(transitionAnimation) {
                     proxy.scrollTo("bottom", anchor: .bottom)
@@ -445,6 +529,7 @@ struct ChatDetailView: View {
             } else {
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
+            if !messages.isEmpty { didPositionHistory = true }
         }
     }
 
@@ -578,7 +663,8 @@ struct ChatDetailView: View {
                 composerInput
             }
         }
-        .liquidGlass(corner: theme.radius)
+        .liquidGlass(corner: theme.composerRadius)
+        .disabled(!tdlib.isSessionReady)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
     }
@@ -635,9 +721,9 @@ struct ChatDetailView: View {
                 .padding(.leading, 12)
                 .padding(.trailing, 4)
                 .padding(.vertical, 4)
-                .frame(minHeight: 44)
+                .frame(minHeight: theme.composerControl)
                 .background(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    RoundedRectangle(cornerRadius: theme.composerRadius, style: .continuous)
                         .fill(theme.field)
                 )
 
@@ -653,7 +739,7 @@ struct ChatDetailView: View {
                     Image(systemName: canSend ? (editing == nil ? "arrow.up" : "checkmark") : "mic")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundColor(theme.accent.onAccent)
-                        .frame(width: 44, height: 44)
+                        .frame(width: theme.composerControl, height: theme.composerControl)
                         .accentSurface(Circle())
                 }
                 .buttonStyle(ThemePressStyle())
@@ -684,7 +770,7 @@ struct ChatDetailView: View {
             } label: {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 15, weight: .bold))
-                    .frame(width: 44, height: 44)
+                    .frame(width: theme.composerControl, height: theme.composerControl)
                     .foregroundStyle(theme.accent.onAccent)
                     .accentSurface(Circle())
             }
