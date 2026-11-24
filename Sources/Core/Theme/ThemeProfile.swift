@@ -184,7 +184,7 @@ enum ThemePreset: String, CaseIterable, Codable, Identifiable {
             result.outgoingStart = 0xD5EEFF
             result.outgoingEnd = 0xC3E8FF
             result.incomingColor = 0xF1F4F7
-            result.showChatDividers = true
+            result.showsChatDividers = true
             return result
         }
     }
