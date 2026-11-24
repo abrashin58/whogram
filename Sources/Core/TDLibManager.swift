@@ -180,7 +180,7 @@ final class TDLibManager: ObservableObject {
     }
 
     private func rememberAuthorization(name: String? = nil) {
-        guard let id = activeProfileID else { return }
+        guard sessionSecurityCode == nil, !requestedLocalLogout, !sessionEnding, let id = activeProfileID else { return }
         var next = catalog
         next.confirmAuthorization(for: id, title: name)
         guard next != catalog else { return }
@@ -591,11 +591,22 @@ final class TDLibManager: ObservableObject {
         let code = int(json["code"]) ?? 0
 
         recordSecurityCode(message)
-        errorMessage = "\(code): \(message)"
+        errorMessage = "TDLib сообщила об ошибке (код \(code))."
     }
 
     private func recordSecurityCode(_ message: String) {
-        if let code = SessionRequestPolicy.securityCode(in: message) { sessionSecurityCode = code }
+        guard let code = SessionRequestPolicy.securityCode(in: message) else { return }
+        sessionSecurityCode = code
+        suspendAutomaticRecovery()
+    }
+
+    private func suspendAutomaticRecovery() {
+        guard let id = activeProfileID else { return }
+        var next = catalog
+        next.suspendAutomaticRecovery(for: id)
+        guard next != catalog else { return }
+        do { try persist(next) }
+        catch { errorMessage = "Не удалось сохранить ограничение автоподключения в связке ключей." }
     }
 
     // MARK: - Авторизация
@@ -665,7 +676,10 @@ final class TDLibManager: ObservableObject {
         case "authorizationStateLoggingOut":
             sessionEnding = true
             if requestedLocalLogout { acknowledgedLocalLogout = true }
-            else { remoteLogout = true }
+            else {
+                remoteLogout = true
+                suspendAutomaticRecovery()
+            }
             statusMessage = requestedLocalLogout ? "Выходим из Whogram…" : "TDLib сообщил о завершении сеанса."
             isLoading = true
 
@@ -744,7 +758,7 @@ final class TDLibManager: ObservableObject {
         case .pause:
             needsConnectionApproval = !wasEstablished && !securityStop
             recoveryNeedsRetry = wasEstablished && !securityStop
-            statusMessage = securityStop ? "Telegram завершил сеанс или сообщил об ошибке безопасности."
+            statusMessage = securityStop ? "TDLib сообщила о завершении сеанса или об ошибке безопасности."
                 : "Не удалось восстановить соединение. Данные профиля сохранены."
         }
     }
@@ -848,6 +862,7 @@ final class TDLibManager: ObservableObject {
 
     func logOut() {
         guard isAuthorized, isSessionReady, !requestedLocalLogout else { return }
+        suspendAutomaticRecovery()
         requestedLocalLogout = true
         statusMessage = "Выход из Whogram…"
         request(["@type": "logOut"], scope: .confirmedLocalLogout) { [weak self] result in

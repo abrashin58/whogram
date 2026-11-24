@@ -118,6 +118,8 @@ struct CoreChecks {
         try data.write(to: unrelated)
         precondition((try? SessionFolders.prepare(storageID: emptyID, requiresExistingDatabase: true,
                                                   applicationSupport: support)) == nil)
+        try Data().write(to: empty.database.appendingPathComponent("td.binlog"))
+        precondition(!SessionFolders.hasDatabase(storageID: emptyID, applicationSupport: support))
         do {
             _ = try SessionFolders.prepare(storageID: missingID, requiresExistingDatabase: true, applicationSupport: support)
             preconditionFailure("Пропавшая база не должна создаваться заново")
@@ -151,6 +153,7 @@ struct CoreChecks {
         precondition(SessionClosePolicy.action(intent: nil, loggedOut: true, hadSecurityStop: false, canRecover: true) == .chooseAccount)
         precondition(SessionClosePolicy.action(intent: .chooseAccount, loggedOut: false, hadSecurityStop: false, canRecover: true) == .chooseAccount)
         precondition(SessionClosePolicy.action(intent: .switchAccount(b), loggedOut: false, hadSecurityStop: false, canRecover: false) == .switchAccount(b))
+        precondition(SessionClosePolicy.action(intent: .switchAccount(b), loggedOut: false, hadSecurityStop: true, canRecover: true) == .pause)
 
         for method in ["terminateSession", "terminateAllOtherSessions", "terminateAllWebAppSessions",
                        "deleteAccount", "destroy", "setInactiveSessionTtl"] {
@@ -204,6 +207,12 @@ struct CoreChecks {
         precondition(catalog.selectedID == second.storageID && catalog.profile(second.storageID)?.databaseKey == secondKey)
         precondition(catalog.profile(second.storageID)?.identity.apiID == 93451235)
         precondition(catalog.profile(first.storageID)?.identity == first)
+        catalog.suspendAutomaticRecovery(for: first.storageID)
+        let paused = try JSONDecoder().decode(SessionCatalog.self, from: JSONEncoder().encode(catalog)).validated()
+        precondition(paused.profile(first.storageID)?.canResumeAtLaunch(hasLegacyDatabase: true) == false)
+        precondition(paused.profile(first.storageID)?.wasAuthorized == true)
+        catalog.confirmAuthorization(for: first.storageID)
+        precondition(catalog.profile(first.storageID)?.canResumeAtLaunch() == true)
         let corrupt = try JSONDecoder().decode(SessionCatalog.self, from: Data(#"{"profiles":[],"selectedID":"00000000-0000-0000-0000-000000000000"}"#.utf8))
         precondition((try? corrupt.validated()) == nil)
     }

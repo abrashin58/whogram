@@ -10,13 +10,14 @@ enum SessionClosePolicy {
     static func action(intent: SessionCloseIntent?, loggedOut: Bool, hadSecurityStop: Bool,
                        canRecover: Bool) -> Action {
         if loggedOut { return .chooseAccount }
+        if hadSecurityStop { return .pause }
         if let intent {
             switch intent {
             case .chooseAccount: return .chooseAccount
             case .switchAccount(let id): return .switchAccount(id)
             }
         }
-        return !hadSecurityStop && canRecover ? .recover : .pause
+        return canRecover ? .recover : .pause
     }
 }
 
@@ -143,6 +144,11 @@ struct SessionCatalog: Codable, Equatable {
     mutating func confirmLocalLogout(for id: UUID) {
         guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
         profiles[index].wasAuthorized = false
+        profiles[index].automaticRecoveryDisabled = true
+    }
+
+    mutating func suspendAutomaticRecovery(for id: UUID) {
+        guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
         profiles[index].automaticRecoveryDisabled = true
     }
 
