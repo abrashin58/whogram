@@ -9,6 +9,7 @@ struct LoginView: View {
 
     @State private var appeared = false
     @State private var editingIdentity = false
+    @State private var editingProfile: UUID?
     @State private var apiID = ""
     @State private var apiHash = ""
     @State private var confirmConnection = false
@@ -50,16 +51,27 @@ struct LoginView: View {
                 appeared = true
             }
         }
+        .onDisappear {
+            apiHash = ""
+            viewModel.clear()
+        }
         .alert(isPublicIdentity ? "Ранее опубликованный API ID" : "Подключиться к Telegram?", isPresented: $confirmConnection) {
             Button("Отмена", role: .cancel) {}
             Button(isPublicIdentity ? "Понимаю риск, подключиться" : "Подключиться") {
                 if let requestedProfile {
                     tdlib.connectProfile(requestedProfile, acknowledgePublicIdentity: isPublicIdentity)
                 } else {
-                    if tdlib.addProfile(id: apiID, hash: apiHash, acknowledgePublicIdentity: isPublicIdentity) {
+                    let saved = if let editingProfile {
+                        tdlib.updateProfileIdentity(editingProfile, id: apiID, hash: apiHash,
+                                                    acknowledgePublicIdentity: isPublicIdentity)
+                    } else {
+                        tdlib.addProfile(id: apiID, hash: apiHash, acknowledgePublicIdentity: isPublicIdentity)
+                    }
+                    if saved {
                         apiID = ""
                         apiHash = ""
                         editingIdentity = false
+                        editingProfile = nil
                     }
                 }
                 viewModel.clear()
@@ -67,13 +79,14 @@ struct LoginView: View {
         } message: {
             Text(isPublicIdentity
                  ? "Эта пара ранее была в открытом репозитории. Telegram может отклонить вход или завершить сеансы. Не используйте основной аккаунт."
-                 : "Не используйте основной аккаунт для проверки после массового завершения сеансов. Выберите отдельный тестовый аккаунт.")
+                 : editingProfile != nil ? "Новая пара будет сохранена для этого профиля. Его база и ключ шифрования не изменятся."
+                    : "Сохранённый сеанс будет открыт из локальной базы, если он доступен.")
         }
         .alert("Начать новую авторизацию?", isPresented: $confirmReauthentication) {
             Button("Отмена", role: .cancel) {}
             Button("Продолжить") { tdlib.allowReauthentication() }
         } message: {
-            Text("TDLib не восстановил сеанс. Прежде чем запрашивать новый код, проверьте активные сеансы в официальном Telegram.")
+            Text("TDLib запросила вход после открытия базы. Прежде чем запрашивать новый код, проверьте активные сеансы в официальном Telegram.")
         }
     }
 
@@ -153,7 +166,7 @@ struct LoginView: View {
     private var connectionForm: some View {
         VStack(spacing: 12) {
             if tdlib.catalogUnavailable {
-                primaryButton("Повторить чтение аккаунтов", loading: false) { tdlib.reloadAccounts() }
+                primaryButton("Повторить чтение аккаунтов", loading: false) { tdlib.loadAndResume() }
             } else if editingIdentity || tdlib.profiles.isEmpty {
                 Text("Whogram не использует общий API ID. Введите данные своего приложения Telegram; они хранятся только в связке ключей этого iPhone.")
                     .font(theme.smallFont)
@@ -183,32 +196,47 @@ struct LoginView: View {
                         apiID = ""
                         apiHash = ""
                         editingIdentity = false
+                        editingProfile = nil
                     }
                     .frame(minHeight: 44)
                 }
             } else {
                 Text("Выберите аккаунт").font(theme.font(16, weight: .semibold))
                 ForEach(tdlib.profiles) { profile in
-                    Button {
-                        requestedProfile = profile.id
-                        confirmConnection = true
-                    } label: {
-                        HStack {
-                            Image(systemName: profile.wasAuthorized ? "person.crop.circle.fill" : "person.crop.circle")
-                            Text(profile.title).lineLimit(1)
-                            Spacer()
-                            if profile.id == tdlib.selectedProfileID {
-                                Image(systemName: "checkmark").accessibilityLabel("Последний выбранный")
+                    HStack {
+                        Button {
+                            requestedProfile = profile.id
+                            confirmConnection = true
+                        } label: {
+                            HStack {
+                                Image(systemName: profile.wasAuthorized ? "person.crop.circle.fill" : "person.crop.circle")
+                                Text(profile.title).lineLimit(1)
+                                Spacer()
+                                if profile.id == tdlib.selectedProfileID {
+                                    Image(systemName: "checkmark").accessibilityLabel("Последний выбранный")
+                                }
                             }
-                            Image(systemName: "chevron.right").accessibilityHidden(true)
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
                         }
-                        .frame(minHeight: 44)
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
+                        Button {
+                            editingProfile = profile.id
+                            apiID = String(profile.identity.apiID)
+                            apiHash = ""
+                            editingIdentity = true
+                        } label: {
+                            Image(systemName: "key.horizontal")
+                                .frame(minWidth: 44, minHeight: 44)
+                        }
+                        .accessibilityLabel("Изменить API профиля \(profile.title)")
                     }
-                    .buttonStyle(.plain)
                     Divider()
                 }
-                Button("Добавить аккаунт") { editingIdentity = true }
+                Button("Добавить аккаунт") {
+                    editingProfile = nil
+                    editingIdentity = true
+                }
                     .frame(minHeight: 44)
             }
         }
@@ -299,11 +327,16 @@ struct LoginView: View {
                     viewModel.submitPassword()
                 }
 
-            case "authorizationStateWaitTdlibParameters", "authorizationStateClosed":
+            case "authorizationStateWaitTdlibParameters":
                 if tdlib.isLoading {
                     ProgressView().tint(theme.accent.main)
                 } else {
                     primaryButton("Повторить подключение", loading: false) { tdlib.retrySession() }
+                }
+            case "authorizationStateClosed":
+                if tdlib.isLoading { ProgressView().tint(theme.accent.main) }
+                else if tdlib.recoveryNeedsRetry {
+                    primaryButton("Восстановить соединение", loading: false) { tdlib.retrySession() }
                 }
 
             default:

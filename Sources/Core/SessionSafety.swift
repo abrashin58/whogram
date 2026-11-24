@@ -1,15 +1,34 @@
 import Foundation
 
-struct SessionStartupGate {
-    private(set) var needsApproval = true
+enum SessionCloseIntent: Equatable {
+    case chooseAccount, switchAccount(UUID)
+}
 
-    mutating func approve(hasIdentity: Bool) -> Bool {
-        guard needsApproval, hasIdentity else { return false }
-        needsApproval = false
+enum SessionClosePolicy {
+    enum Action: Equatable { case chooseAccount, switchAccount(UUID), recover, pause }
+
+    static func action(intent: SessionCloseIntent?, loggedOut: Bool, hadSecurityStop: Bool,
+                       canRecover: Bool) -> Action {
+        if loggedOut { return .chooseAccount }
+        if let intent {
+            switch intent {
+            case .chooseAccount: return .chooseAccount
+            case .switchAccount(let id): return .switchAccount(id)
+            }
+        }
+        return !hadSecurityStop && canRecover ? .recover : .pause
+    }
+}
+
+struct SessionRecoveryBudget {
+    private var lastAttempt: [UUID: TimeInterval] = [:]
+    private let interval: TimeInterval = 60
+
+    mutating func consume(for id: UUID, at time: TimeInterval) -> Bool {
+        if let previous = lastAttempt[id], time - previous < interval { return false }
+        lastAttempt[id] = time
         return true
     }
-
-    mutating func didClose() { needsApproval = true }
 }
 
 struct TelegramAppIdentity: Codable, Equatable {
@@ -34,9 +53,9 @@ struct TelegramAppIdentity: Codable, Equatable {
         guard let apiID = Int32(id.trimmingCharacters(in: .whitespacesAndNewlines)), apiID > 0 else {
             throw ValidationError.invalidID
         }
-        let hash = hash.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let hash = hash.trimmingCharacters(in: .whitespacesAndNewlines)
         guard hash.utf8.count == 32,
-              hash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+              hash.utf8.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }) else {
             throw ValidationError.invalidHash
         }
         self.apiID = apiID
@@ -53,11 +72,18 @@ struct TelegramAppIdentity: Codable, Equatable {
 }
 
 struct SessionProfile: Codable, Identifiable, Equatable {
-    let identity: TelegramAppIdentity
+    fileprivate(set) var identity: TelegramAppIdentity
     let databaseKey: Data?
     var title: String
     var wasAuthorized = false
+    var automaticRecoveryDisabled: Bool?
     var id: UUID { identity.storageID }
+
+    func canResumeAtLaunch(hasLegacyDatabase: Bool = false) -> Bool {
+        // A previously public identity still requires explicit confirmation.
+        identity.apiID != TelegramAppIdentity.previouslyPublicID && automaticRecoveryDisabled != true
+            && (wasAuthorized || (databaseKey == nil && hasLegacyDatabase))
+    }
 }
 
 enum SessionCatalogError: LocalizedError {
@@ -110,12 +136,20 @@ struct SessionCatalog: Codable, Equatable {
     mutating func confirmAuthorization(for id: UUID, title: String? = nil) {
         guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
         profiles[index].wasAuthorized = true
+        profiles[index].automaticRecoveryDisabled = nil
         if let title, !title.isEmpty { profiles[index].title = title }
     }
 
     mutating func confirmLocalLogout(for id: UUID) {
         guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
         profiles[index].wasAuthorized = false
+        profiles[index].automaticRecoveryDisabled = true
+    }
+
+    mutating func updateIdentity(for storageID: UUID, id: String, hash: String) throws {
+        guard let index = profiles.firstIndex(where: { $0.id == storageID }) else { throw SessionCatalogError.invalid }
+        profiles[index].identity = try TelegramAppIdentity(id: id, hash: hash, storageID: storageID)
+        selectedID = storageID
     }
 }
 

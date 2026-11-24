@@ -16,6 +16,7 @@ enum TelegramIdentityStore {
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
+        if status == errSecInteractionNotAllowed { throw StoreError.locked }
         guard status == errSecSuccess, let data = result as? Data else { throw StoreError.unavailable }
         return data
     }
@@ -52,8 +53,13 @@ enum TelegramIdentityStore {
         return Data(bytes)
     }
 
-    private enum StoreError: LocalizedError {
-        case unavailable
-        var errorDescription: String? { "Не удалось открыть связку ключей iPhone. Проверьте, что устройство разблокировано." }
+    enum StoreError: LocalizedError {
+        case locked, unavailable
+        var errorDescription: String? {
+            switch self {
+            case .locked: return "Связка ключей защищена. Разблокируйте iPhone, чтобы восстановить аккаунт."
+            case .unavailable: return "Связка ключей недоступна. Сохранённые базы не изменены."
+            }
+        }
     }
 }

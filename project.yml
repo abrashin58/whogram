@@ -23,7 +23,7 @@ targets:
       properties:
         CFBundleDisplayName: Whogram
         CFBundleShortVersionString: "2.0"
-        CFBundleVersion: "5"
+        CFBundleVersion: "6"
         NSMicrophoneUsageDescription: "Whogram использует микрофон для записи голосовых сообщений."
         LSRequiresIPhoneOS: true
         UIRequiresFullScreen: true

@@ -6,6 +6,9 @@ struct SettingsView: View {
 
     @State private var showLogout = false
     @State private var showProfileEditor = false
+    @State private var showAccounts = false
+    @State private var publicSwitch: UUID?
+    @State private var confirmPublicSwitch = false
 
     private var meName: String {
         tdlib.me?.displayName ?? "Профиль"
@@ -79,7 +82,7 @@ struct SettingsView: View {
                             Divider().overlay(theme.separator)
 
                             Button {
-                                tdlib.disconnectToAccounts()
+                                showAccounts = true
                             } label: {
                                 settingRow(icon: "person.2", color: theme.accent.main,
                                            title: "Сменить или добавить аккаунт",
@@ -134,6 +137,9 @@ struct SettingsView: View {
             .sheet(isPresented: $showProfileEditor) {
                 EditProfileView()
             }
+            .sheet(isPresented: $showAccounts) {
+                accountSwitcher
+            }
             .alert("Выйти только из Whogram?", isPresented: $showLogout) {
                 Button("Отмена", role: .cancel) { }
                 Button("Выйти", role: .destructive) {
@@ -141,6 +147,49 @@ struct SettingsView: View {
                 }
             } message: {
                 Text("Завершится текущий сеанс Whogram, и TDLib очистит его локальные данные. Чтобы сохранить сеанс, выберите «Сменить или добавить аккаунт».")
+            }
+        }
+    }
+
+    private var accountSwitcher: some View {
+        NavigationStack {
+            List {
+                ForEach(tdlib.profiles) { profile in
+                    Button {
+                        if profile.identity.apiID == TelegramAppIdentity.previouslyPublicID {
+                            publicSwitch = profile.id
+                            confirmPublicSwitch = true
+                        } else {
+                            tdlib.switchAccount(to: profile.id)
+                            showAccounts = false
+                        }
+                    } label: {
+                        HStack {
+                            Text(profile.title)
+                            Spacer()
+                            if profile.id == tdlib.selectedProfileID {
+                                Image(systemName: "checkmark").accessibilityLabel("Текущий аккаунт")
+                            }
+                        }
+                    }
+                    .disabled(profile.id == tdlib.selectedProfileID)
+                }
+                Button("Добавить аккаунт или изменить данные API…") {
+                    tdlib.disconnectToAccounts()
+                    showAccounts = false
+                }
+            }
+            .navigationTitle("Аккаунты")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Отмена") { showAccounts = false } } }
+            .alert("Ранее опубликованный API ID", isPresented: $confirmPublicSwitch) {
+                Button("Отмена", role: .cancel) {}
+                Button("Подключиться") {
+                    if let publicSwitch { tdlib.switchAccount(to: publicSwitch, acknowledgePublicIdentity: true) }
+                    showAccounts = false
+                }
+            } message: {
+                Text("Telegram может отклонить этот API ID. Не проверяйте его на основном аккаунте.")
             }
         }
     }

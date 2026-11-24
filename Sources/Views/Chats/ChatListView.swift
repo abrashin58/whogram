@@ -42,6 +42,11 @@ struct ChatListView: View {
     @State private var folder: ChatFolder = .all
     @State private var clearTarget: RealChat?
     @State private var showClearConfirm = false
+    @State private var showRadar = false
+    @State private var radarChatID: Int64?
+    @State private var radarTurn = 0.0
+
+    private var radarCandidates: [RealChat] { tdlib.mainChats.filter(ChatFolder.unread.matches) }
 
     private var filteredChats: [RealChat] {
         tdlib.mainChats.filter { chat in
@@ -76,6 +81,7 @@ struct ChatListView: View {
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
+            .sheet(isPresented: $showRadar) { unreadRadar }
             .navigationDestination(for: Int64.self) { id in
                 if let chat = tdlib.chats.first(where: { $0.id == id }) {
                     ChatDetailView(chat: chat)
@@ -120,6 +126,21 @@ struct ChatListView: View {
 
             Spacer()
 
+            if !radarCandidates.isEmpty {
+                Button {
+                    radarChatID = radarCandidates.first(where: { !$0.isMuted })?.id ?? radarCandidates.first?.id
+                    radarTurn = 0
+                    showRadar = true
+                } label: {
+                    Image(systemName: "scope")
+                        .font(.system(size: 21, weight: .medium))
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(theme.accent.main)
+                .accessibilityLabel("Радар непрочитанных")
+            }
+
             Button {
                 onOpenSettings()
             } label: {
@@ -137,6 +158,53 @@ struct ChatListView: View {
         .padding(.horizontal, 18)
         .padding(.top, 8)
         .padding(.bottom, 10)
+    }
+
+    private var unreadRadar: some View {
+        VStack(spacing: 18) {
+            ZStack {
+                Circle().strokeBorder(theme.accent.main.opacity(0.25), lineWidth: 1)
+                Circle().trim(from: 0, to: 0.26)
+                    .stroke(theme.accent.main, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(radarTurn - 90))
+                Image(systemName: "scope")
+                    .font(.system(size: 29))
+                    .foregroundStyle(theme.accent.main)
+            }
+            .frame(width: 86, height: 86)
+            .accessibilityHidden(true)
+
+            Text("Радар непрочитанных").font(theme.font(22, weight: .bold))
+            if let chat = radarCandidates.first(where: { $0.id == radarChatID }) {
+                Text(chat.title).font(theme.font(16, weight: .semibold)).lineLimit(2)
+                Text(chat.unreadCount > 0 ? "\(chat.unreadCount) · непрочитанные" : "Отмечен как непрочитанный")
+                    .font(theme.smallFont)
+                    .foregroundStyle(theme.textSecondary)
+                Button("Открыть чат") {
+                    showRadar = false
+                    path.append(chat.id)
+                }
+                .buttonStyle(.borderedProminent)
+            } else {
+                Text("Среди загруженных чатов нет выбранного непрочитанного.")
+                    .font(theme.smallFont)
+            }
+            if radarCandidates.contains(where: { $0.id != radarChatID }) {
+                Button("Другой сигнал") {
+                    let next = radarCandidates.filter { $0.id != radarChatID }.randomElement()
+                    radarChatID = next?.id
+                    withAnimation(theme.animation(.spring(response: 0.58, dampingFraction: 0.73), reduced: reduceMotion)) {
+                        if theme.animations && !reduceMotion { radarTurn += 225 }
+                    }
+                }
+                .frame(minHeight: 44)
+            }
+            Button("Закрыть") { showRadar = false }.frame(minHeight: 44)
+        }
+        .multilineTextAlignment(.center)
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ThemeBackdrop())
     }
 
     private var headerSubtitle: String {

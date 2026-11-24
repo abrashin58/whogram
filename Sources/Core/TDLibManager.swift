@@ -16,6 +16,14 @@ final class TDLibManager: ObservableObject {
 
     private lazy var transport = TDLibClientManager()
     private var client: TDLibClient?
+    private var activeProfileID: UUID?
+    private var activeRequiresExistingDatabase = false
+    private var pendingStart: (id: UUID, restoring: Bool)?
+    private var closeIntent: SessionCloseIntent?
+    private var isForeground = false
+    private var checkedColdStart = false
+    private var remoteLogout = false
+    private var recoveryBudget = SessionRecoveryBudget()
     @Published private var catalog = SessionCatalog()
     @Published private(set) var catalogUnavailable = false
     @Published private(set) var requiresReauthentication = false
@@ -34,8 +42,9 @@ final class TDLibManager: ObservableObject {
     @Published var errorMessage: String?
     @Published var statusMessage = "Whogram не подключён к Telegram."
     @Published private(set) var networkNotice: String?
-    @Published private var startupGate = SessionStartupGate()
-    var needsConnectionApproval: Bool { startupGate.needsApproval }
+    @Published private(set) var needsConnectionApproval = true
+    @Published private(set) var isRestoringSession = false
+    @Published private(set) var recoveryNeedsRetry = false
     var profiles: [SessionProfile] { catalog.profiles }
     var selectedProfileID: UUID? { catalog.selectedID }
     var sessionTitle: String? { catalog.profile(selectedProfileID)?.title }
@@ -78,17 +87,34 @@ final class TDLibManager: ObservableObject {
     private var chatSearchTicket = UUID()
     private var messageSearchTicket = UUID()
 
-    private init() { reloadAccounts() }
+    private init() {}
 
-    func reloadAccounts() {
-        guard client == nil else { return }
+    func setForeground(_ foreground: Bool) {
+        isForeground = foreground
+        guard foreground else { return }
+        if !checkedColdStart { loadAndResume() }
+        startPendingIfForeground()
+    }
+
+    func loadAndResume() {
+        guard client == nil, pendingStart == nil else { return }
         do {
             catalog = try TelegramIdentityStore.loadCatalog()
             catalogUnavailable = false
+            checkedColdStart = true
             errorMessage = nil
+            if let profile = catalog.profile(catalog.selectedID),
+               profile.canResumeAtLaunch(hasLegacyDatabase: profile.databaseKey == nil && SessionFolders.hasDatabase(storageID: profile.id)) {
+                scheduleStart(profile.id, restoring: true)
+            } else {
+                statusMessage = catalog.profiles.isEmpty ? "Подключите первый аккаунт" : "Выберите аккаунт"
+            }
+        } catch let error as TelegramIdentityStore.StoreError {
+            catalogUnavailable = true
+            errorMessage = error.localizedDescription
         } catch {
             catalogUnavailable = true
-            errorMessage = "Не удалось прочитать аккаунты из связки ключей. Базы не изменены."
+            errorMessage = "Не удалось прочитать каталог аккаунтов. Базы не изменены."
         }
     }
 
@@ -99,7 +125,7 @@ final class TDLibManager: ObservableObject {
         next.select(id)
         do {
             try persist(next)
-            startClient()
+            scheduleStart(id, restoring: hasStoredSession(profile))
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -114,7 +140,7 @@ final class TDLibManager: ObservableObject {
             var next = catalog
             next.add(proposed, databaseKey: try TelegramIdentityStore.makeDatabaseKey())
             try persist(next)
-            startClient()
+            scheduleStart(proposed.storageID, restoring: false)
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -122,7 +148,31 @@ final class TDLibManager: ObservableObject {
         }
     }
 
-    private var canChooseProfile: Bool { client == nil && needsConnectionApproval && !catalogUnavailable }
+    @discardableResult
+    func updateProfileIdentity(_ storageID: UUID, id: String, hash: String, acknowledgePublicIdentity: Bool) -> Bool {
+        guard canChooseProfile else { return false }
+        var next = catalog
+        do {
+            try next.updateIdentity(for: storageID, id: id, hash: hash)
+            guard let profile = next.profile(storageID),
+                  profile.identity.apiID != TelegramAppIdentity.previouslyPublicID || acknowledgePublicIdentity else { return false }
+            try persist(next)
+            scheduleStart(profile.id, restoring: hasStoredSession(profile))
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    private func hasStoredSession(_ profile: SessionProfile) -> Bool {
+        profile.wasAuthorized || (profile.automaticRecoveryDisabled != true && profile.databaseKey == nil
+            && SessionFolders.hasDatabase(storageID: profile.id))
+    }
+
+    private var canChooseProfile: Bool {
+        client == nil && pendingStart == nil && needsConnectionApproval && !catalogUnavailable
+    }
 
     private func persist(_ next: SessionCatalog) throws {
         try TelegramIdentityStore.saveCatalog(next)
@@ -130,7 +180,7 @@ final class TDLibManager: ObservableObject {
     }
 
     private func rememberAuthorization(name: String? = nil) {
-        guard let id = selectedProfileID else { return }
+        guard let id = activeProfileID else { return }
         var next = catalog
         next.confirmAuthorization(for: id, title: name)
         guard next != catalog else { return }
@@ -138,11 +188,27 @@ final class TDLibManager: ObservableObject {
         catch { errorMessage = "Не удалось сохранить состояние аккаунта в связке ключей." }
     }
 
-    private func startClient() {
-        guard canChooseProfile, catalog.profile(selectedProfileID) != nil,
-              startupGate.approve(hasIdentity: true) else { return }
+    private func scheduleStart(_ id: UUID, restoring: Bool) {
+        guard client == nil, pendingStart == nil, catalog.profile(id) != nil else { return }
+        pendingStart = (id, restoring)
+        needsConnectionApproval = false
+        recoveryNeedsRetry = false
+        isRestoringSession = restoring
+        isLoading = true
+        errorMessage = nil
+        statusMessage = restoring ? "Восстанавливаем сохранённый сеанс…" : "Подключение…"
+        startPendingIfForeground()
+    }
+
+    private func startPendingIfForeground() {
+        guard isForeground, client == nil, let pending = pendingStart else { return }
+        pendingStart = nil
+        activeProfileID = pending.id
+        activeRequiresExistingDatabase = pending.restoring
         requestedLocalLogout = false
         acknowledgedLocalLogout = false
+        remoteLogout = false
+        closeIntent = nil
         closeRequested = false
         requiresReauthentication = false
         networkNotice = nil
@@ -154,10 +220,7 @@ final class TDLibManager: ObservableObject {
         downloading = []
         downloadPriorities = [:]
         downloadProgress = [:]
-        isLoading = true
         authorizationState = "authorizationStateWaitTdlibParameters"
-        errorMessage = nil
-        statusMessage = "Открываем сохранённую сессию…"
         client = transport.createClient { [weak self] data, source in
             DispatchQueue.main.async {
                 guard let self, self.client?.id == source.id else { return }
@@ -167,17 +230,38 @@ final class TDLibManager: ObservableObject {
     }
 
     func retrySession() {
-        if client != nil, !needsConnectionApproval, authorizationState == "authorizationStateWaitTdlibParameters" {
+        if recoveryNeedsRetry, let profile = catalog.profile(selectedProfileID), hasStoredSession(profile) {
+            scheduleStart(profile.id, restoring: true)
+        } else if client != nil, !needsConnectionApproval, authorizationState == "authorizationStateWaitTdlibParameters" {
+            isRestoringSession = catalog.profile(activeProfileID).map(hasStoredSession) ?? false
             setParameters()
         }
     }
 
     func disconnectToAccounts() {
+        if client == nil, pendingStart == nil {
+            recoveryNeedsRetry = false
+            errorMessage = nil
+            showAccountPicker()
+            return
+        }
+        closeForIntent(.chooseAccount)
+    }
+
+    func switchAccount(to id: UUID, acknowledgePublicIdentity: Bool = false) {
+        guard isSessionReady, id != activeProfileID, let profile = catalog.profile(id),
+              profile.identity.apiID != TelegramAppIdentity.previouslyPublicID || acknowledgePublicIdentity else { return }
+        closeForIntent(.switchAccount(id))
+    }
+
+    private func closeForIntent(_ intent: SessionCloseIntent) {
         guard client != nil, !sessionEnding, !closeRequested, !requestedLocalLogout else { return }
+        closeIntent = intent
         closeRequested = true
         statusMessage = "Сохраняем сеанс и закрываем соединение…"
         request(["@type": "close"], scope: .disconnect) { [weak self] result in
             if case let .failure(error) = result {
+                self?.closeIntent = nil
                 self?.closeRequested = false
                 self?.statusMessage = "Не удалось закрыть соединение"
                 self?.errorMessage = error.localizedDescription
@@ -528,22 +612,26 @@ final class TDLibManager: ObservableObject {
 
         case "authorizationStateWaitPhoneNumber":
             resetSession()
-            requiresReauthentication = catalog.profile(selectedProfileID)?.wasAuthorized == true
+            isRestoringSession = false
+            requiresReauthentication = activeRequiresExistingDatabase
             statusMessage = requiresReauthentication
-                ? "Telegram не восстановил сохранённый сеанс. Whogram не запросит новый код автоматически."
+                ? "TDLib открыла сохранённую базу, но запросила вход. Whogram не отправит код без вашего действия."
                 : "Введите номер телефона"
             isLoading = false
 
         case "authorizationStateWaitEmailAddress":
+            isRestoringSession = false
             statusMessage = "Введите адрес электронной почты"
             isLoading = false
 
         case "authorizationStateWaitEmailCode":
+            isRestoringSession = false
             authCodePhone = (state["code_info"] as? [String: Any])?["email_address_pattern"] as? String
             statusMessage = "Введите код из электронной почты"
             isLoading = false
 
         case "authorizationStateWaitCode":
+            isRestoringSession = false
             let info = state["code_info"] as? [String: Any]
             authCodePhone = info?["phone_number"] as? String
             authCodeLength = int((info?["type"] as? [String: Any])?["length"]) ?? 0
@@ -551,12 +639,15 @@ final class TDLibManager: ObservableObject {
             isLoading = false
 
         case "authorizationStateWaitPassword":
+            isRestoringSession = false
             passwordHint = state["password_hint"] as? String
             statusMessage = "Введите облачный пароль"
             isLoading = false
 
         case "authorizationStateReady":
             guard !closeRequested else { return }
+            activeRequiresExistingDatabase = true
+            isRestoringSession = false
             requiresReauthentication = false
             isAuthorized = true
             isLoading = false
@@ -574,6 +665,7 @@ final class TDLibManager: ObservableObject {
         case "authorizationStateLoggingOut":
             sessionEnding = true
             if requestedLocalLogout { acknowledgedLocalLogout = true }
+            else { remoteLogout = true }
             statusMessage = requestedLocalLogout ? "Выходим из Whogram…" : "TDLib сообщил о завершении сеанса."
             isLoading = true
 
@@ -583,32 +675,83 @@ final class TDLibManager: ObservableObject {
             isLoading = true
 
         case "authorizationStateClosed":
-            client = nil // TDLib has released the database and no longer accepts requests.
-            let manuallyClosed = closeRequested
-            closeRequested = false
-            if acknowledgedLocalLogout, let id = selectedProfileID {
-                var next = catalog
-                next.confirmLocalLogout(for: id)
-                do { try persist(next) }
-                catch { errorMessage = "Не удалось обновить состояние аккаунта в связке ключей." }
-            }
-            resetSession()
-            startupGate.didClose()
-            isLoading = false
-            statusMessage = acknowledgedLocalLogout
-                ? "Выполнен выход только из Whogram."
-                : manuallyClosed ? "Соединение закрыто без выхода. Выберите аккаунт."
-                    : "Сеанс закрыт. Автоматического подключения не будет."
+            finishClosedClient()
 
         case "authorizationStateWaitOtherDeviceConfirmation":
+            isRestoringSession = false
             statusMessage = "Подтвердите вход на другом устройстве"
             isLoading = false
 
         default:
+            isRestoringSession = false
             statusMessage = "Этот способ авторизации пока не поддерживается"
             isLoading = false
             break
         }
+    }
+
+    private func finishClosedClient() {
+        let previous = activeProfileID
+        let wasEstablished = activeRequiresExistingDatabase
+        let securityStop = sessionSecurityCode != nil || remoteLogout
+        let explicitLogout = requestedLocalLogout || acknowledgedLocalLogout
+        let intent = closeIntent
+        // This update means TDLib has released the database. Do not spawn the
+        // next client from `Closing` or from the response to the `close` query.
+        client = nil
+        activeProfileID = nil
+        activeRequiresExistingDatabase = false
+        closeIntent = nil
+        closeRequested = false
+        isRestoringSession = false
+        isLoading = false
+        requiresReauthentication = false
+        recoveryNeedsRetry = false
+        resetSession()
+
+        var canRecover = false
+        if intent == nil, !explicitLogout, !securityStop, wasEstablished, let previous {
+            canRecover = recoveryBudget.consume(for: previous, at: ProcessInfo.processInfo.systemUptime)
+        }
+        switch SessionClosePolicy.action(intent: intent, loggedOut: explicitLogout,
+                                         hadSecurityStop: securityStop, canRecover: canRecover) {
+        case .recover:
+            if let previous { scheduleStart(previous, restoring: true) }
+        case .switchAccount(let target):
+            guard let profile = catalog.profile(target) else { showAccountPicker(); return }
+            var next = catalog
+            next.select(target)
+            do {
+                try persist(next)
+                scheduleStart(target, restoring: hasStoredSession(profile))
+            } catch {
+                showAccountPicker()
+                errorMessage = "Не удалось сохранить выбранный аккаунт. Прежний сеанс не удалён."
+            }
+        case .chooseAccount:
+            showAccountPicker()
+            if explicitLogout {
+                if acknowledgedLocalLogout, let previous {
+                    var next = catalog
+                    next.confirmLocalLogout(for: previous)
+                    do { try persist(next) }
+                    catch { errorMessage = "Не удалось обновить состояние аккаунта в связке ключей." }
+                    statusMessage = "Выполнен выход только из Whogram."
+                } else {
+                    statusMessage = "Выход не подтверждён. Автоподключение приостановлено."
+                }
+            }
+        case .pause:
+            needsConnectionApproval = !wasEstablished && !securityStop
+            recoveryNeedsRetry = wasEstablished && !securityStop
+            statusMessage = securityStop ? "Telegram завершил сеанс или сообщил об ошибке безопасности."
+                : "Не удалось восстановить соединение. Данные профиля сохранены."
+        }
+    }
+
+    private func showAccountPicker() {
+        needsConnectionApproval = true
+        statusMessage = "Выберите аккаунт"
     }
 
     private func resetSession() {
@@ -647,13 +790,13 @@ final class TDLibManager: ObservableObject {
 
     private func setParameters() {
         guard !initializingDatabase, !needsConnectionApproval, !closeRequested,
-              let profile = catalog.profile(selectedProfileID) else { return }
+              let profile = catalog.profile(activeProfileID) else { return }
         initializingDatabase = true
         isLoading = true
         errorMessage = nil
         let folders: SessionFolders
         do {
-            folders = try SessionFolders.prepare(storageID: profile.id, requiresExistingDatabase: profile.wasAuthorized)
+            folders = try SessionFolders.prepare(storageID: profile.id, requiresExistingDatabase: activeRequiresExistingDatabase)
             // The Swift wrapper has no request logger configured. Also suppress native
             // TDLib verbose logs before passing any local paths or credential fields.
             let logging = try client?.execute(query: RawTdQuery(object: [
@@ -684,17 +827,23 @@ final class TDLibManager: ObservableObject {
             guard let self else { return }
             self.initializingDatabase = false
             if case let .failure(error) = result, self.authorizationState == "authorizationStateWaitTdlibParameters" {
-                self.failInitialization(error)
+                self.failInitialization(error, fromTDLib: true)
             }
         }
     }
 
-    private func failInitialization(_ error: Swift.Error) {
+    private func failInitialization(_ error: Swift.Error, fromTDLib: Bool = false) {
         initializingDatabase = false
+        isRestoringSession = false
         isLoading = false
         isAuthorized = false
         statusMessage = "Не удалось открыть локальную сессию"
-        errorMessage = error.localizedDescription
+        if fromTDLib, let error = error as? TDRequestError {
+            errorMessage = error.code == 401 ? "Не удалось открыть базу с сохранённым ключом. База не изменена."
+                : "TDLib отклонила параметры подключения (код \(error.code)). База не изменена."
+        } else {
+            errorMessage = error is SessionCatalogError ? error.localizedDescription : "Локальная база недоступна. База не изменена."
+        }
     }
 
     func logOut() {
@@ -739,7 +888,9 @@ final class TDLibManager: ObservableObject {
             self.isLoading = false
             switch result {
             case .success: self.statusMessage = "Ожидаем подтверждение Telegram…"
-            case .failure(let error): self.errorMessage = error.localizedDescription
+            case .failure(let error):
+                let code = (error as? TDRequestError)?.code ?? 0
+                self.errorMessage = "Не удалось завершить этот шаг входа (код \(code)). Проверьте данные и попробуйте снова."
             }
         }
     }

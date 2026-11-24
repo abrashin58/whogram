@@ -35,7 +35,8 @@ final class AuthViewModel: ObservableObject {
     }
 
     func submitCode() {
-        tdlib.submitAuthentication(["@type": "checkAuthenticationCode", "code": code], status: "Проверка кода…")
+        tdlib.submitAuthentication(["@type": "checkAuthenticationCode", "code": code.trimmingCharacters(in: .whitespacesAndNewlines)],
+                                    status: "Проверка кода…")
     }
 
     func submitPassword() {
@@ -50,7 +51,7 @@ final class AuthViewModel: ObservableObject {
     func submitEmailCode() {
         tdlib.submitAuthentication([
             "@type": "checkAuthenticationEmailCode",
-            "code": ["@type": "emailAddressAuthenticationCode", "code": emailCode]
+            "code": ["@type": "emailAddressAuthenticationCode", "code": emailCode.trimmingCharacters(in: .whitespacesAndNewlines)]
         ], status: "Проверка кода…")
     }
 }
