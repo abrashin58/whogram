@@ -2,63 +2,262 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var tdlib: TDLibManager
-    @State private var showLogoutConfirm = false
+    @EnvironmentObject var theme: ThemeManager
+
+    @State private var showLogout = false
+    @State private var showProfileEditor = false
+
+    private var meName: String {
+        tdlib.me?.displayName ?? "Профиль"
+    }
+
+    private var meSubtitle: String {
+        if let handle = tdlib.me?.handle, !handle.isEmpty {
+            return handle
+        }
+        if let phone = tdlib.me?.phone, !phone.isEmpty {
+            return phone
+        }
+        return "Нажмите, чтобы изменить профиль"
+    }
 
     var body: some View {
         NavigationStack {
             ZStack {
-                Color.black.ignoresSafeArea()
+                theme.background.ignoresSafeArea()
 
-                VStack(spacing: 16) {
-                    Image(systemName: "person.crop.circle.badge.checkmark")
-                        .font(.system(size: 64))
-                        .foregroundColor(.green)
+                ScrollView {
+                    VStack(spacing: 18) {
+                        header
+                        profileCard
 
-                    Text("Whogram")
-                        .foregroundColor(.white)
-                        .font(.title2.bold())
+                        section(title: "Оформление") {
+                            NavigationLink {
+                                AppearanceView()
+                            } label: {
+                                settingRow(
+                                    icon: "paintpalette.fill",
+                                    color: theme.accent.main,
+                                    title: "Тема и цвета",
+                                    value: theme.accent.title
+                                )
+                            }
+                            .buttonStyle(.plain)
 
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(tdlib.isAuthorized ? Color.green : Color.orange)
-                            .frame(width: 8, height: 8)
-                        Text(tdlib.statusMessage)
-                            .foregroundColor(.gray)
-                            .font(.footnote)
+                            Divider().overlay(theme.separator)
+
+                            HStack {
+                                settingIcon("photo.on.rectangle", color: Color(hex: 0x8E7CFF))
+                                Text("Обои чата")
+                                    .font(theme.font(14))
+                                    .foregroundColor(theme.textPrimary)
+                                Spacer()
+                                Text(theme.wallpaper.title)
+                                    .font(theme.font(12))
+                                    .foregroundColor(theme.textSecondary)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+
+                            Divider().overlay(theme.separator)
+
+                            NavigationLink {
+                                AppearanceView()
+                            } label: {
+                                settingRow(
+                                    icon: "textformat.size",
+                                    color: Color(hex: 0x38C9A0),
+                                    title: "Размер текста",
+                                    value: "\(Int(theme.fontScale * 100))%"
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        section(title: "Аккаунт") {
+                            infoRow("Телефон", tdlib.me?.phone ?? "—")
+                            Divider().overlay(theme.separator)
+                            infoRow("Username", tdlib.me?.handle ?? "—")
+                            Divider().overlay(theme.separator)
+                            infoRow("Статус", tdlib.statusMessage)
+
+                            Divider().overlay(theme.separator)
+
+                            Button {
+                                showLogout = true
+                            } label: {
+                                HStack {
+                                    Image(systemName: "rectangle.portrait.and.arrow.right")
+                                        .font(.system(size: 14, weight: .semibold))
+                                    Text("Выйти из аккаунта")
+                                        .font(theme.font(14, weight: .semibold))
+                                    Spacer()
+                                }
+                                .foregroundColor(.red)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 13)
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        section(title: "О приложении") {
+                            infoRow("Приложение", "Whogram 1.0")
+                            Divider().overlay(theme.separator)
+                            infoRow("TDLib", "1.8.70")
+                            Divider().overlay(theme.separator)
+                            infoRow("Тема", "\(theme.accent.title) · \(theme.appearance.title)")
+                        }
+
+                        Text("Сделано на SwiftUI + TDLib")
+                            .font(theme.font(10))
+                            .foregroundColor(theme.textSecondary.opacity(0.65))
+                            .padding(.top, 4)
                     }
-
-                    Button {
-                        showLogoutConfirm = true
-                    } label: {
-                        Text("Выйти из аккаунта")
-                            .font(.headline)
-                            .foregroundColor(.red)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.red.opacity(0.12))
-                            .cornerRadius(14)
-                    }
-                    .padding(.top, 24)
-                    .padding(.horizontal, 30)
-
-                    Spacer()
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 16)
                 }
-                .padding(.top, 24)
             }
-            .navigationTitle("Настройки")
-            .toolbarColorScheme(.dark, for: .navigationBar)
-            .confirmationDialog(
-                "Выйти из аккаунта?",
-                isPresented: $showLogoutConfirm,
-                titleVisibility: .visible
-            ) {
+            .toolbar(.hidden, for: .navigationBar)
+            .sheet(isPresented: $showProfileEditor) {
+                EditProfileView()
+            }
+            .alert("Выйти из аккаунта?", isPresented: $showLogout) {
+                Button("Отмена", role: .cancel) { }
                 Button("Выйти", role: .destructive) {
                     tdlib.logOut()
                 }
-                Button("Отмена", role: .cancel) { }
             } message: {
-                Text("Придётся заново ввести номер телефона и код.")
+                Text("Придётся снова ввести номер телефона и код из Telegram.")
             }
+        }
+    }
+
+    private var header: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Настройки")
+                    .font(theme.font(30, weight: .bold))
+                    .foregroundStyle(theme.accent.gradient)
+                Text("Профиль, оформление и аккаунт")
+                    .font(theme.font(12))
+                    .foregroundColor(theme.textSecondary)
+            }
+            Spacer()
+        }
+        .padding(.top, 8)
+    }
+
+    private var profileCard: some View {
+        Button {
+            showProfileEditor = true
+        } label: {
+            HStack(spacing: 14) {
+                AvatarView(
+                    title: meName,
+                    fileID: tdlib.me?.photoFileID,
+                    preview: tdlib.me?.photoPreview,
+                    size: 62,
+                    isOnline: tdlib.isAuthorized
+                )
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(meName)
+                        .font(theme.font(18, weight: .bold))
+                        .foregroundColor(theme.accent.onAccent)
+                        .lineLimit(1)
+
+                    Text(meSubtitle)
+                        .font(theme.font(12))
+                        .foregroundColor(theme.accent.onAccent.opacity(0.78))
+                        .lineLimit(1)
+
+                    Text("Изменить профиль")
+                        .font(theme.font(11, weight: .semibold))
+                        .foregroundColor(theme.accent.onAccent)
+                        .padding(.top, 2)
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(theme.accent.onAccent.opacity(0.8))
+            }
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(theme.accent.gradient)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(Color.white.opacity(0.16), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func settingIcon(_ name: String, color: Color) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundColor(color)
+            .frame(width: 28, height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(color.opacity(0.16))
+            )
+    }
+
+    private func settingRow(icon: String, color: Color, title: String, value: String) -> some View {
+        HStack(spacing: 10) {
+            settingIcon(icon, color: color)
+            Text(title)
+                .font(theme.font(14))
+                .foregroundColor(theme.textPrimary)
+            Spacer()
+            Text(value)
+                .font(theme.font(12))
+                .foregroundColor(theme.textSecondary)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(theme.textSecondary.opacity(0.7))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+    }
+
+    private func infoRow(_ title: String, _ value: String) -> some View {
+        HStack {
+            Text(title)
+                .font(theme.font(14))
+                .foregroundColor(theme.textPrimary)
+            Spacer()
+            Text(value)
+                .font(theme.font(12))
+                .foregroundColor(theme.textSecondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
+    }
+
+    private func section<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title.uppercased())
+                .font(theme.font(10, weight: .semibold))
+                .foregroundColor(theme.textSecondary)
+                .padding(.leading, 6)
+
+            VStack(spacing: 0) {
+                content()
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(theme.card)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(theme.separator.opacity(0.6), lineWidth: 1)
+            )
         }
     }
 }

@@ -3,6 +3,18 @@
 iOS-клиент Telegram на SwiftUI + [TDLib](https://github.com/tdlib/td) через [TDLibKit](https://github.com/Swiftgram/TDLibKit).
 Автор: whomakson.
 
+> Примечание: картинка из Pinterest, на которую ссылался запрос, недоступна модели — дизайн выполнен как современный Telegram-концепт.
+
+## Особенности
+
+- Стикеры: отправка и просмотр из наборов, статичные WebP и анимированные TGS/WebM
+- Медиа: фото, видео, GIF-анимации, голосовые и видеосообщения, аудио, документы
+- Пересылка, реакции, ответы, редактирование, поиск в чате
+- Папки в чатах: «Все / Личные / Группы / Каналы», сортировка по важности
+- Настройки: профиль, информация о чате, типы сообщений
+- Темы: акцентные цвета, обои, стиль пузырей, размер текста, крупные эмодзи, анимации
+- Редизайн в стиле современного Telegram: стеклянные панели, динамические темы темная/светлая, замена зелёного акцента на другие палитры
+
 ## Что было сломано и что исправлено
 
 | Проблема | Исправление |
@@ -16,6 +28,13 @@ iOS-клиент Telegram на SwiftUI + [TDLib](https://github.com/tdlib/td) ч
 | `loadChats` отвечает `404 Not Found`, и это показывалось как ошибка | Ответ 404 игнорируется |
 | Не было выхода из аккаунта | Кнопка «Выйти из аккаунта» в настройках (`logOut`) |
 | Нет понятного лога при падении CI | Билд-лог и `.xcresult` выгружаются артефактом `build-logs` |
+
+## Добавленные функции (см. ANALYSIS.md)
+
+- **Стикеры в чате**: анимированные (TGS/WebM) показываются в пузырях — статический кадр/превью + маркер "плей"; статические стикеры показывают изображение с эмодзи поверху.
+- **Стикеры в панели композера**: поиск по эмодзи (`searchStickers`), показ превью анимированных стикеров.
+- **Голосовые сообщения**: запись через `VoiceRecorder` (AVAudioRecorder) — микрофон в композере, индикатор с временем, отправка `inputMessageVoiceNote` (с волной).
+- **Просмотрщик медиа**: управление видео/аудио — play/pause, слайдер прогресса, время; имя/размер файла для аудио и документов.
 
 ## Требования для сборки
 
@@ -67,10 +86,17 @@ bash scripts/check-syntax.sh
 ```
 Sources/
   App/          точка входа, RootView
-  Core/         TDLibManager (обёртка над TDLib), константы
-  Models/       RealChat, RealMessage
+  Core/         TDLibManager (обёртка над TDLib), константы, темы
+  Models/       RealChat, RealMessage, RealSticker
   ViewModels/   AuthViewModel
-  Views/        экраны: Auth, Chats, Settings, Components
+  Views/
+    Auth/       LoginView, SplashView
+    Chats/      ChatListView, ChatDetailView, ChatInfoView, ChatPickerView, StickerPanel
+    Components/ MessageBubble, TdImage, AvatarView, LiquidGlass, WallpaperView
+    Media/      MediaViewerView
+    Search/     SearchView
+    Settings/   SettingsView, AppearanceView, EditProfileView
+  Core/Media/   ImageCache, AudioPlayer
 project.yml     описание проекта для XcodeGen
 scripts/        проверка синтаксиса
 ```
