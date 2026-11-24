@@ -158,37 +158,18 @@ struct MessageBubble: View {
     private var stickerContent: some View {
         VStack(alignment: .trailing, spacing: 2) {
             ZStack {
-                if shouldShowStickerImage {
+                Text(message.stickerEmoji)
+                    .font(.system(size: 92))
+
+                if shouldRenderStickerImage {
                     TdImage(
                         fileID: message.mediaFileID,
                         previewFileID: message.previewFileID,
-                        previewData: message.previewData,
+                        previewData: nil,
                         priority: 32,
                         showsPlaceholder: false
                     )
                     .frame(width: 158, height: 158)
-                }
-
-                if isPlayableSticker {
-                    // Маркер "плей" для анимированных стикеров (как в Telegram)
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.85))
-                        .frame(width: 22, height: 22)
-                        .background(
-                            Circle()
-                                .fill(Color.black.opacity(0.42))
-                                .frame(width: 30, height: 30)
-                        )
-                        .position(x: 152, y: 20)
-                }
-
-                if !message.stickerEmoji.isEmpty {
-                    Text(message.stickerEmoji)
-                        .font(.system(size: 92))
-                        // При отображаемом изображении — тихий оверлей, иначе показываем эмодзи
-                        .opacity(shouldShowStickerImage ? 0.5 : 1)
-                        .shadow(color: Color.black.opacity(0.25), radius: 1.5)
                 }
             }
             .frame(width: 168, height: 168)
@@ -561,19 +542,10 @@ struct MessageBubble: View {
         return formatter.string(fromByteCount: message.fileSize)
     }
 
-    private var isPlayableSticker: Bool {
-        message.stickerFormat.localizedCaseInsensitiveContains("tgs")
-            || message.stickerFormat.localizedCaseInsensitiveContains("webm")
-    }
-
-    /// Есть что-то, что можно показать как изображение стикера.
-    private var shouldShowStickerImage: Bool {
+    private var shouldRenderStickerImage: Bool {
         guard message.mediaFileID != nil else { return false }
-        if isPlayableSticker {
-            guard let previewFileID = message.previewFileID else { return false }
-            return previewFileID != 0
-        }
-        return true
+        return !message.stickerFormat.localizedCaseInsensitiveContains("tgs")
+            && !message.stickerFormat.localizedCaseInsensitiveContains("webm")
     }
 
     private var iconForKind: String {

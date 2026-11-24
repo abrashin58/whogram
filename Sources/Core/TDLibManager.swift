@@ -28,7 +28,6 @@ final class TDLibManager: ObservableObject {
     @Published var filePaths: [Int32: String] = [:]
     @Published var downloading: Set<Int32> = []
     @Published var recentStickers: [RealSticker] = []
-    @Published var stickerSets: [RealSticker] = []
 
     // Живые состояния
     @Published var typing: [Int64: String] = [:]
@@ -260,18 +259,6 @@ final class TDLibManager: ObservableObject {
         case "stickers":
             if let list = json["stickers"] as? [[String: Any]] {
                 recentStickers = list.compactMap(parseSticker)
-                stickerSets = recentStickers
-            }
-
-        case "stickerSets":
-            if let sets = json["sticker_sets"] as? [[String: Any]] {
-                var result: [RealSticker] = []
-                for set in sets {
-                    if let list = set["sticker_list"] as? [[String: Any]] {
-                        result.append(contentsOf: list.compactMap(parseSticker))
-                    }
-                }
-                stickerSets = result
             }
 
         case "user":
@@ -454,15 +441,6 @@ final class TDLibManager: ObservableObject {
         send(["@type": "getRecentStickers", "is_attached": false])
     }
 
-    func searchStickers(_ query: String) {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            stickerSets = []
-            return
-        }
-        send(["@type": "searchStickers", "emoji_prefix": trimmed.lowercased()])
-    }
-
     func openChat(_ chatID: Int64) {
         send(["@type": "openChat", "chat_id": chatID])
         send([
@@ -635,44 +613,6 @@ final class TDLibManager: ObservableObject {
                 "emoji": sticker.emoji
             ]
         ])
-    }
-
-    func sendVoiceNote(chatID: Int64, draft: VoiceNoteDraft, replyTo: Int64? = nil) {
-        send([
-            "@type": "sendMessage",
-            "chat_id": chatID,
-            "topic_id": NSNull(),
-            "reply_to": replyToObject(replyTo),
-            "options": NSNull(),
-            "reply_markup": NSNull(),
-            "input_message_content": [
-                "@type": "inputMessageVoiceNote",
-                "voice_note": [
-                    "@type": "inputVoiceNote",
-                    "voice": ["@type": "inputFileLocal", "path": draft.url.path],
-                    "duration": max(draft.duration, 0),
-                    "waveform": Self.waveformBase64(for: draft.duration),
-                    "mime_type": "audio/wav"
-                ],
-                "caption": formattedText(""),
-                "disable_notification": false,
-                "self_destruct_type": NSNull()
-            ]
-        ])
-    }
-
-    /// Синтетическая волна (Telegram использует её для визуализации голосового).
-    private static func waveformBase64(for duration: Int) -> String {
-        let bars = 50
-        let flat = Int(max(0, min(duration, 8)) * 12) // длиннее секунды — максимальный уровень
-        let values = (0..<bars).map { index -> Int in
-            let t = Double(index) / Double(max(bars - 1, 1))
-            let edge = 1.0 - pow(t - 0.5, 2) * 3.0 // горб по середине
-            let amplitude = edge * edge
-            let level = Int((amplitude * 0.75 + 0.15) * 31) + flat
-            return min(max(level, 0), 31)
-        }
-        return Data(values.map { UInt8($0 & 0x1F) }).base64EncodedString()
     }
 
     func sendPhoto(chatID: Int64, path: String, width: Int, height: Int, caption: String = "", replyTo: Int64? = nil) {

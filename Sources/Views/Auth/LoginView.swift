@@ -25,7 +25,6 @@ struct LoginView: View {
                 .padding(.horizontal, 26)
                 .frame(maxWidth: .infinity)
             }
-            .scrollDismissesKeyboard(.interactively)
         }
         .onAppear {
             withAnimation(.spring(response: 0.7, dampingFraction: 0.8)) {

@@ -26,7 +26,6 @@ struct ChatDetailView: View {
     @State private var showChatSearch = false
     @State private var searchQuery = ""
     @FocusState private var inputFocused: Bool
-    @ObservedObject private var voiceRecorder = VoiceRecorder.shared
 
     private var liveChat: RealChat {
         tdlib.chats.first(where: { $0.id == chat.id }) ?? chat
@@ -97,9 +96,6 @@ struct ChatDetailView: View {
         }
         .onDisappear {
             tdlib.closeChat(chat.id)
-            if voiceRecorder.isRecording {
-                voiceRecorder.cancel()
-            }
         }
         .onChange(of: messages.count) { _ in
             tdlib.markAsRead(liveChat)
@@ -494,10 +490,6 @@ struct ChatDetailView: View {
 
     private var composer: some View {
         VStack(spacing: 0) {
-            if voiceRecorder.isRecording {
-                voiceRecordingIndicator
-            }
-
             if let replyTo {
                 replyBanner(replyTo, isEditing: false)
             }
@@ -544,15 +536,6 @@ struct ChatDetailView: View {
                     }
 
                     Button {
-                        toggleVoiceRecording()
-                    } label: {
-                        Image(systemName: voiceRecorder.isRecording ? "mic.fill" : "mic")
-                            .font(.system(size: 17, weight: .medium))
-                            .foregroundColor(voiceRecorder.isRecording ? .red : theme.textSecondary)
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
                         withAnimation(.easeInOut(duration: 0.2)) {
                             showStickers.toggle()
                         }
@@ -591,49 +574,6 @@ struct ChatDetailView: View {
 
     private var canSend: Bool {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    // MARK: - Голосовое сообщение
-
-    private func toggleVoiceRecording() {
-        if voiceRecorder.isRecording {
-            voiceRecorder.stop()
-        } else {
-            let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("voice-\(UUID().uuidString).wav")
-            VoiceRecorder.shared.start(url: url) { draft in
-                tdlib.sendVoiceNote(chatID: chat.id, draft: draft, replyTo: replyTo?.id)
-                replyTo = nil
-            }
-        }
-    }
-
-    private var voiceRecordingIndicator: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "waveform")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.red)
-
-            Text(String(format: "%02d:%02d", Int(voiceRecorder.duration) / 60, Int(voiceRecorder.duration) % 60))
-                .font(theme.font(12, weight: .semibold))
-                .foregroundColor(theme.textPrimary)
-                .frame(width: 42, alignment: .leading)
-
-            Spacer()
-
-            Button {
-                voiceRecorder.cancel()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(theme.textSecondary)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 10)
-        .background(theme.elevated)
-        .clipShape(RoundedRectangle(cornerRadius: 18))
     }
 
     private func composerIcon(_ name: String) -> some View {
