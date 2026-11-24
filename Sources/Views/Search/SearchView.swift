@@ -39,7 +39,7 @@ struct SearchView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                theme.background.ignoresSafeArea()
+                ThemeBackdrop()
 
                 VStack(spacing: 0) {
                     header
@@ -88,7 +88,7 @@ struct SearchView: View {
             if !query.isEmpty {
                 Button {
                     query = ""
-                    tdlib.searchChatIDs = []
+                    tdlib.searchChats("")
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundColor(theme.textSecondary)
@@ -107,10 +107,8 @@ struct SearchView: View {
             debounce?.cancel()
 
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else {
-                tdlib.searchChatIDs = []
-                return
-            }
+            tdlib.searchChats("")
+            guard !trimmed.isEmpty else { return }
 
             let item = DispatchWorkItem {
                 tdlib.searchChats(trimmed)
@@ -118,6 +116,7 @@ struct SearchView: View {
             debounce = item
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: item)
         }
+        .onDisappear { debounce?.cancel() }
     }
 
     private var resultsList: some View {
@@ -140,7 +139,7 @@ struct SearchView: View {
                             preview: chat.lastMessageText.isEmpty ? chat.kindTitle : chat.lastMessageText
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(ThemePressStyle())
                 }
             }
             .padding(.horizontal, 14)
@@ -152,12 +151,9 @@ struct SearchView: View {
     private var emptyState: some View {
         VStack(spacing: 10) {
             Spacer()
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 40, weight: .light))
-                .foregroundColor(theme.textSecondary.opacity(0.6))
-            Text(trimmedQuery.isEmpty ? "Начните вводить название" : "Ничего не найдено")
-                .font(theme.font(13))
-                .foregroundColor(theme.textSecondary)
+            ThemeEmptyState(icon: "magnifyingglass",
+                            title: trimmedQuery.isEmpty ? "Поиск в Telegram" : "Ничего не найдено",
+                            detail: trimmedQuery.isEmpty ? "Введите название чата, группы или канала." : "Попробуйте другое название.")
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

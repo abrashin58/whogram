@@ -20,7 +20,7 @@ struct EditProfileView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                theme.background.ignoresSafeArea()
+                ThemeBackdrop()
 
                 ScrollView {
                     VStack(spacing: 16) {
@@ -51,12 +51,9 @@ struct EditProfileView: View {
                                 .foregroundColor(theme.accent.onAccent)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 14)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                        .fill(theme.accent.gradient)
-                                )
+                                .accentSurface(RoundedRectangle(cornerRadius: theme.radius, style: .continuous))
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(ThemePressStyle())
                         .padding(.top, 6)
 
                         Text("Telegram сам проверит username. Если он занят, придёт ошибка.")

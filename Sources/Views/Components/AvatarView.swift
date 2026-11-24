@@ -58,33 +58,21 @@ struct AvatarView: View {
 
 struct WallpaperView: View {
     @EnvironmentObject var theme: ThemeManager
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         ZStack {
             LinearGradient(
-                colors: theme.wallpaper.colors,
+                colors: theme.wallpaperColors,
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
-
-            Circle()
-                .fill(theme.accent.main.opacity(0.28))
-                .frame(width: 340, height: 340)
-                .blur(radius: 110)
-                .offset(x: -130, y: -230)
-
-            Circle()
-                .fill(theme.accent.secondary.opacity(0.22))
-                .frame(width: 300, height: 300)
-                .blur(radius: 120)
-                .offset(x: 160, y: 260)
-
-            LinearGradient(
-                colors: [Color.black.opacity(0.15), Color.black.opacity(0.45)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+            if theme.wallpaper != .plain && theme.glow > 0 && !reduceTransparency {
+                RadialGradient(colors: [theme.accent.secondary.opacity(theme.glow * theme.profile.wallpaperStrength), .clear],
+                               center: .bottomTrailing, startRadius: 0, endRadius: 320)
+            }
         }
-        .ignoresSafeArea()
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
     }
 }

@@ -3,6 +3,7 @@ import SwiftUI
 struct MainTabView: View {
     @EnvironmentObject var tdlib: TDLibManager
     @EnvironmentObject var theme: ThemeManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var tab: MainTab = .chats
     @State private var chatsPath = NavigationPath()
@@ -37,32 +38,32 @@ struct MainTabView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
+        Group {
             Group {
                 switch tab {
                 case .chats:
                     ChatListView(path: $chatsPath, onOpenSettings: {
-                        withAnimation(.easeInOut(duration: 0.2)) { tab = .settings }
+                        select(.settings)
                     })
                 case .search:
                     SearchView { id in
                         chatsPath = NavigationPath()
                         chatsPath.append(id)
-                        withAnimation(.easeInOut(duration: 0.2)) { tab = .chats }
+                        select(.chats)
                     }
                 case .settings:
                     SettingsView()
                 }
             }
-            .padding(.bottom, chatsPath.isEmpty ? 74 : 0)
-
-            if chatsPath.isEmpty {
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if tab != .chats || chatsPath.isEmpty {
                 tabBar
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 6)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 5)
             }
         }
-        .background(theme.background.ignoresSafeArea())
+        .background(ThemeBackdrop())
         .overlay(alignment: .top) {
             if let toast {
                 HStack(spacing: 8) {
@@ -86,11 +87,11 @@ struct MainTabView: View {
         }
         .onChange(of: tdlib.errorMessage) { value in
             guard let value else { return }
-            withAnimation(.easeOut(duration: 0.2)) { toast = value }
+            withAnimation(theme.animation(.easeOut(duration: 0.2), reduced: reduceMotion)) { toast = value }
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
                 if toast == value {
-                    withAnimation(.easeOut(duration: 0.2)) { toast = nil }
+                    withAnimation(theme.animation(.easeOut(duration: 0.2), reduced: reduceMotion)) { toast = nil }
                 }
                 if tdlib.errorMessage == value {
                     tdlib.errorMessage = nil
@@ -99,15 +100,19 @@ struct MainTabView: View {
         }
     }
 
+    private func select(_ item: MainTab) {
+        withAnimation(theme.animation(.spring(response: 0.32, dampingFraction: 0.86), reduced: reduceMotion)) {
+            tab = item
+        }
+    }
+
     private var tabBar: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 4) {
             ForEach(MainTab.allCases) { item in
                 Button {
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
-                        tab = item
-                    }
+                    select(item)
                 } label: {
-                    HStack(spacing: 6) {
+                    VStack(spacing: 4) {
                         ZStack(alignment: .topTrailing) {
                             Image(systemName: item.icon)
                                 .font(.system(size: 15, weight: .semibold))
@@ -120,27 +125,25 @@ struct MainTabView: View {
                             }
                         }
 
-                        if tab == item {
-                            Text(item.title)
-                                .font(theme.font(12, weight: .semibold))
-                                .lineLimit(1)
-                        }
+                        Text(item.title)
+                            .font(theme.font(10, weight: .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
                     }
-                    .foregroundColor(tab == item ? theme.accent.main : theme.textSecondary)
+                    .foregroundColor(tab == item ? theme.accent.onAccent : theme.textSecondary)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(
-                        Capsule().fill(tab == item ? theme.accent.main.opacity(0.14) : Color.clear)
-                    )
+                    .frame(minHeight: 46)
+                    .background {
+                        if tab == item { Capsule().fill(.clear).accentSurface(Capsule()) }
+                    }
+                    .contentShape(Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ThemePressStyle())
+                .accessibilityAddTraits(tab == item ? .isSelected : [])
+                .accessibilityValue(item == .chats && totalUnread > 0 ? "\(totalUnread) непрочитанных" : "")
             }
         }
         .padding(6)
-        .background(.ultraThinMaterial)
-        .background(theme.card.opacity(0.72))
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(Color.white.opacity(0.10), lineWidth: 1))
-        .shadow(color: Color.black.opacity(0.25), radius: 18, x: 0, y: 8)
+        .liquidGlass(corner: theme.radius + 6)
     }
 }

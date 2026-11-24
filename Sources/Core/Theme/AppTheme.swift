@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import Combine
 
 // MARK: - Цвета
 
@@ -52,46 +53,31 @@ enum AccentPalette: String, CaseIterable, Identifiable {
         }
     }
 
-    var colors: [Color] {
+    var rgb: [UInt32] {
         switch self {
         case .neon:
-            return [Color(hex: 0x66F5A0), Color(hex: 0x12B76A)]
+            return [0x66F5A0, 0x12B76A]
         case .ocean:
-            return [Color(hex: 0x4FACFE), Color(hex: 0x2A6BF2)]
+            return [0x4FACFE, 0x2A6BF2]
         case .violet:
-            return [Color(hex: 0xA78BFA), Color(hex: 0x6D28D9)]
+            return [0xA78BFA, 0x6D28D9]
         case .sunset:
-            return [Color(hex: 0xFF8A65), Color(hex: 0xE0245E)]
+            return [0xFF8A65, 0xE0245E]
         case .amber:
-            return [Color(hex: 0xFFD166), Color(hex: 0xF59E0B)]
+            return [0xFFD166, 0xF59E0B]
         case .crimson:
-            return [Color(hex: 0xFF6B6B), Color(hex: 0xC81E5B)]
+            return [0xFF6B6B, 0xC81E5B]
         case .mint:
-            return [Color(hex: 0x7CF5D0), Color(hex: 0x0E9F8A)]
+            return [0x7CF5D0, 0x0E9F8A]
         }
     }
 
-    var main: Color { colors[0] }
-    var secondary: Color { colors[1] }
-
-    var gradient: LinearGradient {
-        LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
-    }
-
-    /// Тёмный текст для светлых палитр.
-    var onAccent: Color {
-        switch self {
-        case .neon, .amber, .mint:
-            return Color(hex: 0x08130D)
-        case .ocean, .violet, .sunset, .crimson:
-            return .white
-        }
-    }
+    var tint: ThemeTint { ThemeTint(start: rgb[0], end: rgb[1]) }
 }
 
 // MARK: - Тема оформления
 
-enum AppearanceMode: String, CaseIterable, Identifiable {
+enum AppearanceMode: String, CaseIterable, Codable, Identifiable {
     case dark
     case light
     case system
@@ -115,7 +101,7 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
     }
 }
 
-enum BubbleStyle: String, CaseIterable, Identifiable {
+enum BubbleStyle: String, CaseIterable, Codable, Identifiable {
     case modern
     case glass
     case classic
@@ -131,13 +117,15 @@ enum BubbleStyle: String, CaseIterable, Identifiable {
     }
 }
 
-enum ChatWallpaper: String, CaseIterable, Identifiable {
+enum ChatWallpaper: String, CaseIterable, Codable, Identifiable {
     case aurora
     case midnight
     case ocean
     case sunset
     case graphite
     case blossom
+    case pitch
+    case plain
 
     var id: String { rawValue }
 
@@ -149,98 +137,177 @@ enum ChatWallpaper: String, CaseIterable, Identifiable {
         case .sunset: return "Тепло"
         case .graphite: return "Графит"
         case .blossom: return "Сакура"
+        case .pitch: return "Чёрный"
+        case .plain: return "Без градиента"
         }
     }
 
-    var colors: [Color] {
+    var rgb: [UInt32] {
         switch self {
         case .aurora:
-            return [Color(hex: 0x0B1220), Color(hex: 0x161031), Color(hex: 0x0A1A17)]
+            return [0x17274E, 0x321957, 0x113D35]
         case .midnight:
-            return [Color(hex: 0x05070C), Color(hex: 0x0D1422)]
+            return [0x05070C, 0x0D1422]
         case .ocean:
-            return [Color(hex: 0x061A2B), Color(hex: 0x0A3147)]
+            return [0x102236, 0x145471]
         case .sunset:
-            return [Color(hex: 0x2A0E1B), Color(hex: 0x3B1B0E)]
+            return [0x59182D, 0x67321A]
         case .graphite:
-            return [Color(hex: 0x0C0D10), Color(hex: 0x1A1C22)]
+            return [0x0C0D10, 0x292C34]
         case .blossom:
-            return [Color(hex: 0x241026), Color(hex: 0x3A1230)]
+            return [0x281038, 0x581746]
+        case .pitch, .plain:
+            return [0x000000, 0x000000]
         }
     }
 }
 
-// MARK: - Менеджер темы
+struct ThemeTint {
+    let start: UInt32
+    let end: UInt32
+    var darkSurface: UInt32 = 0x121414
+    var lightSurface: UInt32 = 0xFFFFFF
+
+    var main: Color {
+        .dynamic(dark: ThemeContrast.readable(start, on: darkSurface),
+                 light: ThemeContrast.readable(start, on: lightSurface))
+    }
+
+    var secondary: Color { Color(hex: end) }
+
+    private var ink: UInt32 { ThemeContrast.foreground(on: start) }
+    var onAccent: Color { Color(hex: ink) }
+
+    var gradient: LinearGradient {
+        let safeEnd = ThemeContrast.readable(end, on: ink)
+        let endpoint = (0...12).allSatisfy {
+            ThemeContrast.ratio(ThemeContrast.mix(start, safeEnd, amount: Double($0) / 12), ink) >= 4.5
+        } ? safeEnd : start
+        return LinearGradient(colors: [Color(hex: start), Color(hex: endpoint)],
+                              startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+}
 
 final class ThemeManager: ObservableObject {
-    @Published var accent: AccentPalette {
-        didSet { defaults.set(accent.rawValue, forKey: Keys.accent) }
+    private struct State: Codable {
+        var preset: ThemePreset
+        var custom: ThemeProfile?
     }
-    @Published var appearance: AppearanceMode {
-        didSet { defaults.set(appearance.rawValue, forKey: Keys.appearance) }
-    }
-    @Published var wallpaper: ChatWallpaper {
-        didSet { defaults.set(wallpaper.rawValue, forKey: Keys.wallpaper) }
-    }
-    @Published var bubbleStyle: BubbleStyle {
-        didSet { defaults.set(bubbleStyle.rawValue, forKey: Keys.bubbleStyle) }
-    }
-    @Published var fontScale: Double {
-        didSet { defaults.set(fontScale, forKey: Keys.fontScale) }
-    }
-    @Published var largeEmoji: Bool {
-        didSet { defaults.set(largeEmoji, forKey: Keys.largeEmoji) }
-    }
-    @Published var animations: Bool {
-        didSet { defaults.set(animations, forKey: Keys.animations) }
+    private static let storageKey = "whogram.design.v2"
+    private let defaults: UserDefaults
+    @Published private var state: State {
+        didSet { persist() }
     }
 
-    private let defaults = UserDefaults.standard
-
-    private enum Keys {
-        static let accent = "theme.accent"
-        static let appearance = "theme.appearance"
-        static let wallpaper = "theme.wallpaper"
-        static let bubbleStyle = "theme.bubbleStyle"
-        static let fontScale = "theme.fontScale"
-        static let largeEmoji = "theme.largeEmoji"
-        static let animations = "theme.animations"
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if let data = defaults.data(forKey: Self.storageKey),
+           let saved = try? JSONDecoder().decode(State.self, from: data) {
+            state = State(preset: saved.preset, custom: saved.custom?.validated)
+        } else if ["accent", "appearance", "wallpaper", "bubbleStyle", "fontScale", "largeEmoji", "animations"]
+            .contains(where: { defaults.object(forKey: "theme.\($0)") != nil }) {
+            var profile = ThemePreset.neonPulse.profile
+            let colors = (AccentPalette(rawValue: defaults.string(forKey: "theme.accent") ?? "") ?? .neon).rgb
+            profile.accentStart = colors[0]
+            profile.accentEnd = colors[1]
+            profile.appearance = AppearanceMode(rawValue: defaults.string(forKey: "theme.appearance") ?? "") ?? .dark
+            profile.wallpaper = ChatWallpaper(rawValue: defaults.string(forKey: "theme.wallpaper") ?? "") ?? .aurora
+            profile.bubble = BubbleStyle(rawValue: defaults.string(forKey: "theme.bubbleStyle") ?? "") ?? .modern
+            profile.fontScale = defaults.object(forKey: "theme.fontScale") as? Double ?? 1
+            profile.largeEmoji = defaults.object(forKey: "theme.largeEmoji") as? Bool ?? true
+            profile.motion = defaults.object(forKey: "theme.animations") as? Bool ?? true
+            profile.surface = .glass
+            state = State(preset: .custom, custom: profile.validated)
+            persist()
+        } else {
+            state = State(preset: .neonPulse, custom: nil)
+        }
     }
 
-    init() {
-        accent = AccentPalette(rawValue: defaults.string(forKey: Keys.accent) ?? "") ?? .neon
-        appearance = AppearanceMode(rawValue: defaults.string(forKey: Keys.appearance) ?? "") ?? .dark
-        wallpaper = ChatWallpaper(rawValue: defaults.string(forKey: Keys.wallpaper) ?? "") ?? .aurora
-        bubbleStyle = BubbleStyle(rawValue: defaults.string(forKey: Keys.bubbleStyle) ?? "") ?? .modern
-
-        let storedScale = defaults.double(forKey: Keys.fontScale)
-        fontScale = storedScale == 0 ? 1.0 : storedScale
-        largeEmoji = defaults.object(forKey: Keys.largeEmoji) as? Bool ?? true
-        animations = defaults.object(forKey: Keys.animations) as? Bool ?? true
+    private func persist() {
+        if let data = try? JSONEncoder().encode(state) { defaults.set(data, forKey: Self.storageKey) }
     }
 
-    // MARK: Фоны и текст
+    var preset: ThemePreset { state.preset }
+    var profile: ThemeProfile { preset == .custom ? (state.custom ?? preset.profile) : preset.profile }
 
-    var background: Color { Color.dynamic(dark: 0x0A0B0F, light: 0xF2F3F7) }
-    var elevated: Color { Color.dynamic(dark: 0x12141A, light: 0xFFFFFF) }
-    var card: Color { Color.dynamic(dark: 0x181B22, light: 0xFFFFFF) }
-    var textPrimary: Color { Color.dynamic(dark: 0xF5F7FA, light: 0x0B0D12) }
-    var textSecondary: Color { Color.dynamic(dark: 0x8B93A1, light: 0x6B7280) }
-    var separator: Color { Color.dynamic(dark: 0x252A33, light: 0xE3E6EB) }
-    var incomingBubble: Color { Color.dynamic(dark: 0x1C2028, light: 0xFFFFFF) }
-    var field: Color { Color.dynamic(dark: 0x1A1E26, light: 0xEDEFF3) }
+    func select(_ preset: ThemePreset) {
+        guard preset != self.preset else { return }
+        state = State(preset: preset, custom: state.custom ?? (preset == .custom ? profile : nil))
+    }
 
-    var outgoingGradient: LinearGradient { accent.gradient }
-    var outgoingText: Color { accent.onAccent }
+    func edit(_ edit: (inout ThemeProfile) -> Void) {
+        var profile = profile
+        edit(&profile)
+        state = State(preset: .custom, custom: profile.validated)
+    }
 
-    var bubbleCorner: CGFloat { bubbleStyle == .classic ? 14 : 20 }
+    func resetCustom() {
+        state = State(preset: .custom, custom: ThemePreset.neonPulse.profile)
+    }
+
+    var appearance: AppearanceMode { profile.appearance }
+    var wallpaper: ChatWallpaper { profile.wallpaper }
+    var bubbleStyle: BubbleStyle { profile.bubble }
+    var fontScale: Double { profile.fontScale }
+    var largeEmoji: Bool { profile.largeEmoji }
+    var animations: Bool { profile.motion }
+    var compact: Bool { profile.compact }
+    var glow: Double { profile.glow }
+    var radius: CGFloat { CGFloat(profile.radius) }
+    var bubbleCorner: CGFloat { bubbleStyle == .classic ? min(14, radius) : radius }
+
+    var accent: ThemeTint {
+        ThemeTint(start: profile.accentStart, end: profile.accentEnd,
+                  darkSurface: profile.darkSurface, lightSurface: profile.lightSurface)
+    }
+
+    private var outgoing: ThemeTint {
+        ThemeTint(start: profile.outgoingStart ?? profile.accentStart, end: profile.outgoingEnd ?? profile.accentEnd)
+    }
+    var outgoingGradient: LinearGradient { outgoing.gradient }
+    var outgoingText: Color { outgoing.onAccent }
+    var background: Color { .dynamic(dark: profile.darkBackground, light: profile.lightBackground) }
+    var card: Color { .dynamic(dark: profile.darkSurface, light: profile.lightSurface) }
+    var elevated: Color { card }
+    var textPrimary: Color {
+        .dynamic(dark: ThemeContrast.foreground(on: profile.darkSurface), light: ThemeContrast.foreground(on: profile.lightSurface))
+    }
+    var textSecondary: Color {
+        .dynamic(dark: ThemeContrast.readable(0xA5B0BC, on: profile.darkSurface),
+                 light: ThemeContrast.readable(0x5C6570, on: profile.lightSurface))
+    }
+    var separator: Color { textPrimary.opacity(0.17) }
+    var incomingBubble: Color { card }
+    var field: Color {
+        .dynamic(dark: ThemeContrast.mix(profile.darkSurface, ThemeContrast.foreground(on: profile.darkSurface), amount: 0.07),
+                 light: ThemeContrast.mix(profile.lightSurface, ThemeContrast.foreground(on: profile.lightSurface), amount: 0.06))
+    }
+
+    var wallpaperColors: [Color] {
+        if wallpaper == .plain { return [background, background] }
+        return wallpaper.rgb.map {
+            .dynamic(dark: ThemeContrast.mix(profile.darkBackground, $0, amount: profile.wallpaperStrength),
+                     light: ThemeContrast.mix(profile.lightBackground, $0, amount: profile.wallpaperStrength * 0.15))
+        }
+    }
+
+    func animation(_ animation: Animation, reduced: Bool) -> Animation? {
+        animations && !reduced ? animation : nil
+    }
 
     var textFont: Font { font(15) }
     var smallFont: Font { font(12) }
     var captionFont: Font { font(11) }
 
     func font(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size * CGFloat(fontScale), weight: weight)
+        let design: Font.Design
+        switch profile.typeface {
+        case .system: design = .default
+        case .rounded: design = .rounded
+        case .monospaced: design = .monospaced
+        }
+        return .system(size: UIFontMetrics.default.scaledValue(for: size * CGFloat(fontScale)), weight: weight, design: design)
     }
 
     func avatarColor(for title: String) -> Color {

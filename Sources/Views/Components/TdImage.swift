@@ -6,12 +6,17 @@ struct TdImage: View {
     let previewData: Data?
     var priority: Int32 = 8
     var showsPlaceholder = true
+    var contentMode: ContentMode = .fill
+    var fallbackEmoji: String? = nil
 
     @EnvironmentObject var tdlib: TDLibManager
-    @State private var image: UIImage?
+    @EnvironmentObject private var theme: ThemeManager
+    private struct Files: Equatable { let full: Int32?; let preview: Int32? }
 
-    private var trackingID: Int32 {
-        fileID ?? previewFileID ?? -1
+    private var image: UIImage? {
+        if let path = tdlib.filePath(fileID), let full = ImageCache.shared.image(at: path) { return full }
+        if let path = tdlib.filePath(previewFileID) { return ImageCache.shared.image(at: path) }
+        return nil
     }
 
     var body: some View {
@@ -19,20 +24,25 @@ struct TdImage: View {
             if let image {
                 Image(uiImage: image)
                     .resizable()
-                    .aspectRatio(contentMode: .fill)
+                    .aspectRatio(contentMode: contentMode)
             } else if let previewData, let preview = UIImage(data: previewData) {
                 Image(uiImage: preview)
                     .resizable()
-                    .aspectRatio(contentMode: .fill)
+                    .aspectRatio(contentMode: contentMode)
                     .blur(radius: 10)
+            } else if let fallbackEmoji, !fallbackEmoji.isEmpty {
+                Text(fallbackEmoji)
+                    .font(.system(size: 38))
             } else {
                 placeholder
             }
         }
         .clipped()
-        .onAppear { load() }
-        .onChange(of: tdlib.filePaths[trackingID]) { _ in
-            load()
+        .task(id: Files(full: fileID, preview: previewFileID)) {
+            if let previewFileID, previewFileID != fileID, tdlib.filePath(fileID) == nil {
+                tdlib.downloadFile(previewFileID, priority: priority)
+            }
+            if let fileID { tdlib.downloadFile(fileID, priority: priority) }
         }
     }
 
@@ -40,36 +50,17 @@ struct TdImage: View {
         ZStack {
             if showsPlaceholder {
                 LinearGradient(
-                    colors: [Color.white.opacity(0.10), Color.white.opacity(0.03)],
+                    colors: [theme.field, theme.card],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 )
                 Image(systemName: "photo")
                     .font(.system(size: 22, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.35))
+                    .foregroundColor(theme.textSecondary.opacity(0.65))
             } else {
                 Color.clear
             }
         }
     }
 
-    private func load() {
-        if image != nil { return }
-
-        if let id = fileID, let path = tdlib.filePaths[id], let loaded = ImageCache.shared.image(at: path) {
-            image = loaded
-            return
-        }
-
-        if let id = previewFileID, id != fileID, let path = tdlib.filePaths[id], let loaded = ImageCache.shared.image(at: path) {
-            image = loaded
-            return
-        }
-
-        if let id = fileID {
-            tdlib.downloadFile(id, priority: priority)
-        } else if let id = previewFileID {
-            tdlib.downloadFile(id, priority: priority)
-        }
-    }
 }

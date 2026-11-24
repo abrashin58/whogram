@@ -2,6 +2,12 @@ import Combine
 import Foundation
 import TDLibKit
 
+private struct TDRequestError: LocalizedError {
+    let code: Int
+    let message: String
+    var errorDescription: String? { message }
+}
+
 final class TDLibManager: ObservableObject {
     static let shared = TDLibManager()
 
@@ -23,10 +29,15 @@ final class TDLibManager: ObservableObject {
     @Published var users: [Int64: RealUser] = [:]
     @Published var me: RealUser?
     @Published var myBio = ""
+    @Published private(set) var isLoadingChats = false
+    @Published private(set) var loadingHistory: Set<Int64> = []
+    @Published private(set) var exhaustedHistory: Set<Int64> = []
 
     // Файлы и стикеры
     @Published var filePaths: [Int32: String] = [:]
     @Published var downloading: Set<Int32> = []
+    @Published private(set) var downloadProgress: [Int32: Double] = [:]
+    @Published private(set) var downloadErrors: [Int32: String] = [:]
     @Published var recentStickers: [RealSticker] = []
 
     // Живые состояния
@@ -36,10 +47,8 @@ final class TDLibManager: ObservableObject {
 
     private var typingTimers: [Int64: DispatchWorkItem] = [:]
     private var lastTypingSent: [Int64: Date] = [:]
-    private var loadingMore: Set<Int64> = []
-    private var requestedMyFullInfo = false
-    private var waitingForMe = false
-    private var waitingForMyFullInfo = false
+    private var chatSearchTicket = UUID()
+    private var messageSearchTicket = UUID()
 
     private init() {
         client = TdClientImpl(completionQueue: .main)
@@ -67,7 +76,37 @@ final class TDLibManager: ObservableObject {
             errorMessage = "Ошибка формирования запроса"
             return
         }
-        try? client.send(query: RawTdQuery(object: object), completion: nil)
+        do {
+            try client.send(query: RawTdQuery(object: object), completion: nil)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func request(
+        _ object: [String: Any],
+        completion: @escaping (Result<[String: Any], Swift.Error>) -> Void
+    ) {
+        guard JSONSerialization.isValidJSONObject(object) else {
+            completion(.failure(TDRequestError(code: 0, message: "Ошибка формирования запроса")))
+            return
+        }
+        do {
+            try client.send(query: RawTdQuery(object: object)) { data in
+                guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                    completion(.failure(TDRequestError(code: 0, message: "Не удалось прочитать ответ TDLib")))
+                    return
+                }
+                if json["@type"] as? String == "error" {
+                    completion(.failure(TDRequestError(code: (json["code"] as? NSNumber)?.intValue ?? 0,
+                                                       message: json["message"] as? String ?? "Ошибка TDLib")))
+                } else {
+                    completion(.success(json))
+                }
+            }
+        } catch {
+            completion(.failure(error))
+        }
     }
 
     // MARK: - Разбор обновлений
@@ -102,6 +141,7 @@ final class TDLibManager: ObservableObject {
                 chats[index].lastMessageSenderID = senderUserID(last["sender_id"])
             } else {
                 chats[index].lastMessageText = ""
+                chats[index].lastMessageDate = 0
                 chats[index].lastMessageID = 0
                 chats[index].lastMessageSenderID = nil
             }
@@ -199,6 +239,9 @@ final class TDLibManager: ObservableObject {
             guard let id = int64(json["old_message_id"]),
                   let chatID = int64((json["message"] as? [String: Any])?["chat_id"]) else { return }
             markMessageFailed(id: id, chatID: chatID)
+            if let error = json["error"] as? [String: Any], let message = error["message"] as? String {
+                errorMessage = message
+            }
 
         case "updateMessageContent":
             guard let chatID = int64(json["chat_id"]),
@@ -233,23 +276,16 @@ final class TDLibManager: ObservableObject {
             handleChatAction(json)
 
         case "updateFile":
-            handleFile(json)
+            if let file = json["file"] as? [String: Any] { handleFile(file) }
 
         case "messages":
             handleHistory(json)
 
         case "message":
-            if let messageJson = json["message"] as? [String: Any],
-               let message = parseMessage(messageJson) {
+            if let message = parseMessage(json) {
                 upsertMessage(message)
                 updatePreview(with: message)
             }
-
-        case "foundChatMessages":
-            handleFoundMessages(json)
-
-        case "chats":
-            handleChatSearch(json)
 
         case "chat":
             if let chat = json["chat"] as? [String: Any] {
@@ -264,20 +300,11 @@ final class TDLibManager: ObservableObject {
         case "user":
             if let user = parseUser(json) {
                 applyUser(user)
-                if waitingForMe {
-                    me = user
-                    waitingForMe = false
-                }
             }
 
-        case "userFullInfo":
-            if waitingForMyFullInfo {
-                let bio = text(json["bio"])
-                if !bio.isEmpty {
-                    myBio = bio
-                }
-                waitingForMyFullInfo = false
-            }
+        case "updateUserFullInfo":
+            if let myID = me?.id, int64(json["user_id"]) == myID,
+               let info = json["user_full_info"] as? [String: Any] { myBio = text(info["bio"]) }
 
         case "supergroup":
             if let id = int64(json["id"]) {
@@ -295,7 +322,7 @@ final class TDLibManager: ObservableObject {
             }
 
         case "updateBasicGroup":
-            if let group = json["basicGroup"] as? [String: Any], let id = int64(group["id"]) {
+            if let group = json["basic_group"] as? [String: Any], let id = int64(group["id"]) {
                 updateMemberCount(basicGroupID: id, count: int(group["member_count"]) ?? 0)
             }
 
@@ -307,9 +334,6 @@ final class TDLibManager: ObservableObject {
     private func handleError(_ json: [String: Any]) {
         let message = json["message"] as? String ?? "Ошибка TDLib"
         let code = int(json["code"]) ?? 0
-
-        // 404 — нормальный ответ loadChats, когда все чаты уже загружены.
-        if code == 404 || message == "Not Found" { return }
 
         errorMessage = "\(code): \(message)"
         if isLoading && !isAuthorized {
@@ -370,16 +394,26 @@ final class TDLibManager: ObservableObject {
         chats = []
         messages = [:]
         typing = [:]
+        typingTimers.values.forEach { $0.cancel() }
+        typingTimers.removeAll()
+        lastTypingSent.removeAll()
+        users = [:]
+        filePaths = [:]
+        downloading = []
+        downloadProgress = [:]
+        downloadErrors = [:]
+        recentStickers = []
+        chatSearchTicket = UUID()
+        messageSearchTicket = UUID()
         messageSearchResults = []
         searchChatIDs = []
         authCodePhone = nil
         passwordHint = nil
         me = nil
         myBio = ""
-        requestedMyFullInfo = false
-        waitingForMe = false
-        waitingForMyFullInfo = false
-        loadingMore = []
+        loadingHistory = []
+        exhaustedHistory = []
+        isLoadingChats = false
     }
 
     private func setParameters() {
@@ -405,7 +439,7 @@ final class TDLibManager: ObservableObject {
             "system_language_code": "ru",
             "device_model": "iPhone",
             "system_version": "iOS",
-            "application_version": "1.0"
+            "application_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.0"
         ])
     }
 
@@ -424,33 +458,73 @@ final class TDLibManager: ObservableObject {
     // MARK: - Загрузка данных
 
     func loadChats() {
-        send([
+        guard !isLoadingChats else { return }
+        isLoadingChats = true
+        request([
             "@type": "loadChats",
             "chat_list": ["@type": "chatListMain"],
             "limit": 100
-        ])
+        ]) { [weak self] result in
+            guard let self, self.isAuthorized else { return }
+            self.isLoadingChats = false
+            if case let .failure(error) = result, (error as? TDRequestError)?.code != 404 {
+                self.errorMessage = error.localizedDescription
+            }
+        }
     }
 
     func loadMe() {
-        waitingForMe = true
-        waitingForMyFullInfo = true
-        send(["@type": "getMe"])
+        request(["@type": "getMe"]) { [weak self] result in
+            guard let self, self.isAuthorized else { return }
+            switch result {
+            case .success(let json):
+                guard let user = self.parseUser(json) else { return }
+                self.me = user
+                self.applyUser(user)
+                self.request(["@type": "getUserFullInfo", "user_id": user.id]) { [weak self] result in
+                    guard let self, self.me?.id == user.id, case .success(let json) = result else { return }
+                    self.myBio = self.text(json["bio"])
+                }
+            case .failure(let error):
+                self.errorMessage = error.localizedDescription
+            }
+        }
     }
 
     func loadRecentStickers() {
         send(["@type": "getRecentStickers", "is_attached": false])
     }
 
+    func searchStickers(_ query: String, completion: @escaping (Result<[RealSticker], Swift.Error>) -> Void) {
+        let emojiOnly = query.unicodeScalars.contains { $0.properties.isEmojiPresentation || $0.value == 0xFE0F }
+            && !query.unicodeScalars.contains { CharacterSet.letters.contains($0) }
+        request([
+            "@type": "searchStickers",
+            "sticker_type": ["@type": "stickerTypeRegular"],
+            "emojis": emojiOnly ? query : "", "query": emojiOnly ? "" : query,
+            "input_language_codes": Array(Set(Locale.preferredLanguages.compactMap { identifier in
+                identifier.split(separator: "-").first.map { String($0) }
+            })).sorted(),
+            "offset": 0, "limit": 40
+        ]) { [weak self] result in
+            guard let self else { return }
+            completion(result.map { ($0["stickers"] as? [[String: Any]] ?? []).compactMap(self.parseSticker) })
+        }
+    }
+
+    func loadStickerPack(_ id: Int64, completion: @escaping (Result<RealStickerPack, Swift.Error>) -> Void) {
+        request(["@type": "getStickerSet", "set_id": String(id)]) { [weak self] result in
+            guard let self else { return }
+            completion(result.map {
+                RealStickerPack(title: $0["title"] as? String ?? "Набор стикеров",
+                                stickers: ($0["stickers"] as? [[String: Any]] ?? []).compactMap(self.parseSticker))
+            })
+        }
+    }
+
     func openChat(_ chatID: Int64) {
         send(["@type": "openChat", "chat_id": chatID])
-        send([
-            "@type": "getChatHistory",
-            "chat_id": chatID,
-            "from_message_id": 0,
-            "offset": 0,
-            "limit": 50,
-            "only_local": false
-        ])
+        loadHistory(chatID: chatID, from: 0)
     }
 
     func closeChat(_ chatID: Int64) {
@@ -458,20 +532,35 @@ final class TDLibManager: ObservableObject {
     }
 
     func loadMoreMessages(chatID: Int64) {
-        guard !loadingMore.contains(chatID) else { return }
-        guard let first = messages[chatID]?.first, first.id > 0 else { return }
+        guard !exhaustedHistory.contains(chatID),
+              let first = messages[chatID]?.first(where: { $0.id > 0 }) else { return }
+        loadHistory(chatID: chatID, from: first.id)
+    }
 
-        loadingMore.insert(chatID)
-        send([
+    private func loadHistory(chatID: Int64, from messageID: Int64) {
+        guard loadingHistory.insert(chatID).inserted else { return }
+        request([
             "@type": "getChatHistory",
             "chat_id": chatID,
-            "from_message_id": first.id,
+            "from_message_id": messageID,
             "offset": 0,
             "limit": 50,
             "only_local": false
-        ])
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-            self?.loadingMore.remove(chatID)
+        ]) { [weak self] result in
+            guard let self, self.isAuthorized else { return }
+            self.loadingHistory.remove(chatID)
+            switch result {
+            case .success(let json):
+                let parsed = (json["messages"] as? [[String: Any]] ?? []).compactMap(self.parseMessage)
+                self.mergeHistory(parsed, chatID: chatID)
+                if parsed.isEmpty || (messageID > 0 && !parsed.contains(where: { $0.id < messageID })) {
+                    self.exhaustedHistory.insert(chatID)
+                } else if messageID == 0 {
+                    self.exhaustedHistory.remove(chatID)
+                }
+            case .failure(let error):
+                self.errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -613,6 +702,36 @@ final class TDLibManager: ObservableObject {
                 "emoji": sticker.emoji
             ]
         ])
+    }
+
+    func sendVoiceNote(chatID: Int64, draft: VoiceNoteDraft, replyTo: Int64? = nil) {
+        request([
+            "@type": "sendMessage", "chat_id": chatID, "topic_id": NSNull(),
+            "reply_to": replyToObject(replyTo), "options": NSNull(), "reply_markup": NSNull(),
+            "input_message_content": [
+                "@type": "inputMessageVoiceNote",
+                "voice_note": [
+                    "@type": "inputVoiceNote",
+                    "voice_note": ["@type": "inputFileLocal", "path": draft.url.path],
+                    "duration": draft.duration,
+                    "waveform": draft.waveform.base64EncodedString()
+                ],
+                "caption": formattedText(""), "self_destruct_type": NSNull()
+            ]
+        ]) { [weak self] result in
+            switch result {
+            case .success(let json):
+                if let self, let message = self.parseMessage(json) { self.upsertMessage(message) }
+            case .failure(let error):
+                try? FileManager.default.removeItem(at: draft.url)
+                self?.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func markMediaOpened(_ message: RealMessage) {
+        guard message.kind == .voice || message.kind == .videoNote, message.id > 0 else { return }
+        send(["@type": "openMessageContent", "chat_id": message.chatID, "message_id": message.id])
     }
 
     func sendPhoto(chatID: Int64, path: String, width: Int, height: Int, caption: String = "", replyTo: Int64? = nil) {
@@ -785,24 +904,35 @@ final class TDLibManager: ObservableObject {
 
     func searchChats(_ query: String) {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ticket = UUID()
+        chatSearchTicket = ticket
+        searchChatIDs = []
         guard !trimmed.isEmpty else {
-            searchChatIDs = []
             return
         }
-        send([
+        request([
             "@type": "searchChats",
             "query": trimmed,
+            "type_filter": NSNull(),
             "limit": 30
-        ])
+        ]) { [weak self] result in
+            guard let self, self.chatSearchTicket == ticket else { return }
+            switch result {
+            case .success(let json): self.handleChatSearch(json)
+            case .failure(let error): self.errorMessage = error.localizedDescription
+            }
+        }
     }
 
     func searchMessages(chatID: Int64, query: String) {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            messageSearchResults = []
+            clearMessageSearch()
             return
         }
-        send([
+        let ticket = UUID()
+        messageSearchTicket = ticket
+        request([
             "@type": "searchChatMessages",
             "chat_id": chatID,
             "topic_id": NSNull(),
@@ -812,10 +942,17 @@ final class TDLibManager: ObservableObject {
             "offset": 0,
             "limit": 30,
             "filter": ["@type": "searchMessagesFilterEmpty"]
-        ])
+        ]) { [weak self] result in
+            guard let self, self.messageSearchTicket == ticket else { return }
+            switch result {
+            case .success(let json): self.handleFoundMessages(json)
+            case .failure(let error): self.errorMessage = error.localizedDescription
+            }
+        }
     }
 
     func clearMessageSearch() {
+        messageSearchTicket = UUID()
         messageSearchResults = []
     }
 
@@ -827,14 +964,24 @@ final class TDLibManager: ObservableObject {
         if downloading.contains(fileID) { return }
 
         downloading.insert(fileID)
-        send([
+        downloadErrors.removeValue(forKey: fileID)
+        request([
             "@type": "downloadFile",
             "file_id": fileID,
             "priority": priority,
             "offset": 0,
             "limit": 0,
             "synchronous": false
-        ])
+        ]) { [weak self] result in
+            guard let self, self.isAuthorized else { return }
+            switch result {
+            case .success(let file): self.handleFile(file)
+            case .failure(let error):
+                self.downloading.remove(fileID)
+                self.downloadProgress.removeValue(forKey: fileID)
+                self.downloadErrors[fileID] = error.localizedDescription
+            }
+        }
     }
 
     func filePath(_ fileID: Int32?) -> String? {
@@ -1011,7 +1158,10 @@ final class TDLibManager: ObservableObject {
               let first = list.first,
               let chatID = int64(first["chat_id"]) else { return }
 
-        let parsed = list.compactMap(parseMessage)
+        mergeHistory(list.compactMap(parseMessage), chatID: chatID)
+    }
+
+    private func mergeHistory(_ parsed: [RealMessage], chatID: Int64) {
         var current = messages[chatID] ?? []
         let known = Set(current.map { $0.id })
         current.append(contentsOf: parsed.filter { !known.contains($0.id) })
@@ -1186,9 +1336,8 @@ final class TDLibManager: ObservableObject {
 
     // MARK: - Файлы
 
-    private func handleFile(_ json: [String: Any]) {
-        guard let file = json["file"] as? [String: Any],
-              let id = int32(file["id"]) else { return }
+    private func handleFile(_ file: [String: Any]) {
+        guard let id = int32(file["id"]) else { return }
 
         let local = file["local"] as? [String: Any]
         let completed = bool(local?["is_downloading_completed"]) ?? false
@@ -1199,6 +1348,20 @@ final class TDLibManager: ObservableObject {
                 filePaths[id] = path
             }
             downloading.remove(id)
+            downloadProgress.removeValue(forKey: id)
+            downloadErrors.removeValue(forKey: id)
+        } else if downloading.contains(id) {
+            if bool(local?["can_be_downloaded"]) == false && bool(local?["is_downloading_active"]) == false {
+                downloading.remove(id)
+                downloadProgress.removeValue(forKey: id)
+                downloadErrors[id] = "Файл недоступен для загрузки."
+            } else {
+                let total = max(int64(file["size"]) ?? 0, int64(file["expected_size"]) ?? 0)
+                if total > 0 {
+                    let progress = Double(int64(local?["downloaded_size"]) ?? 0) / Double(total)
+                    downloadProgress[id] = min(max(progress, 0), 1)
+                }
+            }
         }
     }
 
@@ -1281,6 +1444,8 @@ final class TDLibManager: ObservableObject {
         message.stickerEmoji = ""
         message.stickerRemoteID = ""
         message.stickerFormat = ""
+        message.stickerSetID = nil
+        message.text = ""
         message.waveform = []
 
         switch type {
@@ -1379,6 +1544,7 @@ final class TDLibManager: ObservableObject {
             if let sticker = content["sticker"] as? [String: Any] {
                 message.stickerEmoji = sticker["emoji"] as? String ?? "🙂"
                 message.stickerFormat = (sticker["format"] as? [String: Any])?["@type"] as? String ?? ""
+                message.stickerSetID = int64(sticker["set_id"]).flatMap { $0 == 0 ? nil : $0 }
                 message.isPremiumSticker = bool(content["is_premium"]) ?? false
                 message.mediaWidth = int(sticker["width"]) ?? 512
                 message.mediaHeight = int(sticker["height"]) ?? 512
@@ -1463,7 +1629,7 @@ final class TDLibManager: ObservableObject {
     }
 
     private func int64(_ value: Any?) -> Int64? {
-        (value as? NSNumber)?.int64Value
+        (value as? NSNumber)?.int64Value ?? (value as? String).flatMap(Int64.init)
     }
 
     private func double(_ value: Any?) -> Double? {
@@ -1511,8 +1677,6 @@ final class TDLibManager: ObservableObject {
               let data = Data(base64Encoded: base64),
               !data.isEmpty else { return [] }
 
-        return data.prefix(120).map { byte in
-            CGFloat(min(Int(byte), 31)) / 31.0
-        }
+        return VoiceWaveform.unpack(data).map { CGFloat($0) / 31 }
     }
 }

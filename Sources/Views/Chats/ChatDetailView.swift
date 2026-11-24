@@ -7,6 +7,8 @@ struct ChatDetailView: View {
     @EnvironmentObject var tdlib: TDLibManager
     @EnvironmentObject var theme: ThemeManager
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
 
     let chat: RealChat
 
@@ -25,7 +27,16 @@ struct ChatDetailView: View {
     @State private var viewerMessage: RealMessage?
     @State private var showChatSearch = false
     @State private var searchQuery = ""
+    @State private var searchTarget: Int64?
+    @State private var olderSearchResult: RealMessage?
+    @State private var stickerPack: StickerPackLink?
     @FocusState private var inputFocused: Bool
+    @StateObject private var voiceRecorder = VoiceRecorder()
+
+    private struct StickerPackLink: Identifiable { let id: Int64 }
+    private var transitionAnimation: Animation? {
+        theme.animation(.spring(response: 0.32, dampingFraction: 0.88), reduced: reduceMotion)
+    }
 
     private var liveChat: RealChat {
         tdlib.chats.first(where: { $0.id == chat.id }) ?? chat
@@ -45,7 +56,7 @@ struct ChatDetailView: View {
 
     var body: some View {
         ZStack {
-            WallpaperView()
+            WallpaperView().ignoresSafeArea()
 
             VStack(spacing: 0) {
                 header
@@ -64,7 +75,9 @@ struct ChatDetailView: View {
                     HStack(spacing: 6) {
                         Text(typingText)
                             .font(theme.font(11))
-                            .foregroundColor(.white.opacity(0.75))
+                            .foregroundColor(theme.textSecondary)
+                            .padding(5)
+                            .background(theme.card, in: Capsule())
                         Spacer()
                     }
                     .padding(.horizontal, 18)
@@ -74,8 +87,7 @@ struct ChatDetailView: View {
                 if showStickers {
                     StickerPanel(
                         onSticker: { sticker in
-                            tdlib.sendSticker(sticker, chatID: chat.id, replyTo: replyTo?.id)
-                            replyTo = nil
+                            sendSticker(sticker)
                         },
                         onEmoji: { emoji in
                             text += emoji
@@ -96,6 +108,14 @@ struct ChatDetailView: View {
         }
         .onDisappear {
             tdlib.closeChat(chat.id)
+            tdlib.clearMessageSearch()
+            voiceRecorder.cancel()
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .background { voiceRecorder.cancel() }
+        }
+        .onChange(of: voiceRecorder.error) { error in
+            if let error { tdlib.errorMessage = error }
         }
         .onChange(of: messages.count) { _ in
             tdlib.markAsRead(liveChat)
@@ -105,6 +125,25 @@ struct ChatDetailView: View {
         }
         .sheet(item: $viewerMessage) { message in
             MediaViewerView(message: message)
+        }
+        .sheet(item: $stickerPack) { pack in
+            StickerPackView(setID: pack.id, onSticker: sendSticker)
+        }
+        .sheet(item: $olderSearchResult) { message in
+            NavigationStack {
+                ScrollView {
+                    bubble(for: message, showsSender: liveChat.isGroup)
+                        .padding(14)
+                }
+                .background { WallpaperView().ignoresSafeArea() }
+                .navigationTitle("Результат поиска")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Закрыть") { olderSearchResult = nil }
+                    }
+                }
+            }
         }
         .sheet(item: $forwardTarget) { message in
             ChatPickerView(title: "Переслать") { target in
@@ -161,7 +200,8 @@ struct ChatDetailView: View {
                     .frame(width: 34, height: 34)
                     .background(Circle().fill(theme.card.opacity(0.7)))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(ThemePressStyle())
+            .accessibilityLabel("Назад")
 
             Button {
                 showInfo = true
@@ -201,7 +241,7 @@ struct ChatDetailView: View {
             Spacer()
 
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
+                withAnimation(transitionAnimation) {
                     showChatSearch.toggle()
                 }
                 if !showChatSearch {
@@ -212,6 +252,7 @@ struct ChatDetailView: View {
                 headerIcon(showChatSearch ? "xmark" : "magnifyingglass")
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(showChatSearch ? "Закрыть поиск" : "Поиск в чате")
 
             Menu {
                 Button {
@@ -248,10 +289,13 @@ struct ChatDetailView: View {
             } label: {
                 headerIcon("ellipsis")
             }
+            .accessibilityLabel("Действия чата")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(theme.background.opacity(0.92))
+        .liquidGlass(corner: theme.radius)
+        .padding(.horizontal, 8)
+        .padding(.top, 3)
     }
 
     private func headerIcon(_ name: String) -> some View {
@@ -292,46 +336,49 @@ struct ChatDetailView: View {
     private var messagesList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 5) {
-                    if messages.count >= 40 {
+                LazyVStack(spacing: theme.compact ? 3 : 7) {
+                    if messages.contains(where: { $0.id > 0 }) && !tdlib.exhaustedHistory.contains(chat.id) {
                         Button {
                             tdlib.loadMoreMessages(chatID: chat.id)
                         } label: {
-                            Text("Загрузить ещё")
-                                .font(theme.font(12, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.8))
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 6)
-                                .background(Capsule().fill(Color.black.opacity(0.25)))
+                            Group {
+                                if tdlib.loadingHistory.contains(chat.id) {
+                                    ProgressView()
+                                } else {
+                                    Text("Загрузить ещё").font(theme.font(12, weight: .semibold))
+                                }
+                            }
+                            .foregroundStyle(theme.textPrimary)
+                            .padding(.horizontal, 14)
+                            .frame(minHeight: 44)
+                            .background(theme.card, in: Capsule())
                         }
                         .buttonStyle(.plain)
+                        .disabled(tdlib.loadingHistory.contains(chat.id))
                         .padding(.bottom, 4)
                     }
 
                     if messages.isEmpty {
-                        VStack(spacing: 8) {
-                            Image(systemName: "bubble.left.and.bubble.right")
-                                .font(.system(size: 34, weight: .light))
-                                .foregroundColor(.white.opacity(0.5))
-                            Text("Здесь пока нет сообщений")
-                                .font(theme.font(13))
-                                .foregroundColor(.white.opacity(0.7))
+                        if tdlib.loadingHistory.contains(chat.id) {
+                            ChatSkeleton(count: 4)
+                        } else {
+                            ThemeEmptyState(icon: "bubble.left.and.bubble.right", title: "Здесь пока тихо",
+                                            detail: "В этом чате пока нет сообщений.")
+                                .padding(.top, 64)
                         }
-                        .padding(.top, 80)
                     }
 
                     ForEach(days) { day in
                         Text(DateFormatters.dayTitle(day.date))
                             .font(theme.font(11, weight: .semibold))
-                            .foregroundColor(.white.opacity(0.8))
+                            .foregroundColor(theme.textSecondary)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
-                            .background(Capsule().fill(Color.black.opacity(0.28)))
+                            .background(Capsule().fill(theme.card))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 6)
 
-                        ForEach(day.messages.indices, id: \.self) { index in
-                            let message = day.messages[index]
+                        ForEach(Array(day.messages.enumerated()), id: \.element.id) { index, message in
                             bubble(for: message, showsSender: showsSender(message, index: index, in: day))
                                 .id(message.id)
                         }
@@ -346,9 +393,15 @@ struct ChatDetailView: View {
                 .padding(.bottom, 4)
             }
             .onAppear {
-                scrollToBottom(proxy, animated: false)
+                if let target = searchTarget {
+                    searchTarget = nil
+                    DispatchQueue.main.async { proxy.scrollTo(target, anchor: .center) }
+                } else {
+                    scrollToBottom(proxy, animated: false)
+                }
             }
-            .onChange(of: messages.count) { _ in
+            .onChange(of: messages.last?.id) { newID in
+                guard newID != nil else { return }
                 scrollToBottom(proxy, animated: true)
             }
         }
@@ -360,11 +413,13 @@ struct ChatDetailView: View {
             chat: liveChat,
             showsSender: showsSender,
             onReply: {
+                olderSearchResult = nil
                 replyTo = message
                 editing = nil
                 inputFocused = true
             },
             onEdit: {
+                olderSearchResult = nil
                 editing = message
                 replyTo = nil
                 text = message.text
@@ -379,6 +434,9 @@ struct ChatDetailView: View {
             },
             onOpenMedia: {
                 viewerMessage = message
+            },
+            onOpenStickerPack: {
+                if let id = message.stickerSetID { stickerPack = StickerPackLink(id: id) }
             }
         )
     }
@@ -394,7 +452,7 @@ struct ChatDetailView: View {
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
             if animated {
-                withAnimation(.easeOut(duration: 0.22)) {
+                withAnimation(transitionAnimation) {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
             } else {
@@ -409,11 +467,11 @@ struct ChatDetailView: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.white.opacity(0.6))
+                .foregroundColor(theme.textSecondary)
 
             TextField("Поиск в чате", text: $searchQuery)
                 .font(theme.font(14))
-                .foregroundColor(.white)
+                .foregroundColor(theme.textPrimary)
                 .autocorrectionDisabled()
                 .onChange(of: searchQuery) { value in
                     if value.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -429,13 +487,13 @@ struct ChatDetailView: View {
                     tdlib.clearMessageSearch()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundColor(.white.opacity(0.5))
+                        .foregroundColor(theme.textSecondary)
                 }
                 .buttonStyle(.plain)
             }
 
             Button("Отмена") {
-                withAnimation(.easeInOut(duration: 0.2)) {
+                withAnimation(transitionAnimation) {
                     showChatSearch = false
                 }
                 searchQuery = ""
@@ -446,7 +504,9 @@ struct ChatDetailView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(Color.black.opacity(0.28))
+        .liquidGlass(corner: theme.radius)
+        .padding(.horizontal, 8)
+        .padding(.top, 4)
     }
 
     private var searchResults: some View {
@@ -455,12 +515,20 @@ struct ChatDetailView: View {
                 if tdlib.messageSearchResults.isEmpty {
                     Text("Ничего не найдено")
                         .font(theme.font(13))
-                        .foregroundColor(.white.opacity(0.7))
+                        .foregroundColor(theme.textSecondary)
                         .padding(.top, 40)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 10)
+                        .background(theme.card, in: RoundedRectangle(cornerRadius: 14))
                 }
 
                 ForEach(tdlib.messageSearchResults) { message in
                     Button {
+                        if messages.contains(where: { $0.id == message.id }) {
+                            searchTarget = message.id
+                        } else {
+                            olderSearchResult = message
+                        }
                         showChatSearch = false
                         searchQuery = ""
                         tdlib.clearMessageSearch()
@@ -497,7 +565,19 @@ struct ChatDetailView: View {
                 replyBanner(editing, isEditing: true)
             }
 
-            HStack(alignment: .bottom, spacing: 8) {
+            if voiceRecorder.isRecording {
+                recordingControls
+            } else {
+                composerInput
+            }
+        }
+        .liquidGlass(corner: theme.radius)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+    }
+
+    private var composerInput: some View {
+            HStack(alignment: .bottom, spacing: 6) {
                 Menu {
                     Button {
                         showPhotoPicker = true
@@ -512,18 +592,17 @@ struct ChatDetailView: View {
                     }
 
                     Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showStickers.toggle()
-                        }
+                        toggleStickers()
                     } label: {
                         Label("Стикеры", systemImage: "face.smiling")
                     }
                 } label: {
                     composerIcon("plus")
                 }
+                .accessibilityLabel("Вложения")
 
-                HStack(alignment: .bottom, spacing: 8) {
-                TextField("Сообщение…", text: $text)
+                HStack(alignment: .bottom, spacing: 5) {
+                TextField("Сообщение…", text: $text, axis: .vertical)
                     .font(theme.textFont)
                     .foregroundColor(theme.textPrimary)
                     .lineLimit(1...5)
@@ -536,40 +615,87 @@ struct ChatDetailView: View {
                     }
 
                     Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showStickers.toggle()
-                        }
+                        toggleStickers()
                     } label: {
                         Image(systemName: "face.smiling")
                             .font(.system(size: 17, weight: .medium))
                             .foregroundColor(theme.textSecondary)
+                            .frame(minWidth: 36, minHeight: 36)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Стикеры и эмодзи")
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
+                .padding(.leading, 12)
+                .padding(.trailing, 4)
+                .padding(.vertical, 4)
+                .frame(minHeight: 44)
                 .background(
                     RoundedRectangle(cornerRadius: 20, style: .continuous)
                         .fill(theme.field)
                 )
 
                 Button {
-                    sendText()
+                    if canSend {
+                        sendText()
+                    } else {
+                        inputFocused = false
+                        showStickers = false
+                        voiceRecorder.start()
+                    }
                 } label: {
-                    Image(systemName: editing == nil ? "arrow.up" : "checkmark")
+                    Image(systemName: canSend ? (editing == nil ? "arrow.up" : "checkmark") : "mic")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundColor(theme.accent.onAccent)
-                        .frame(width: 38, height: 38)
-                        .background(Circle().fill(theme.accent.gradient))
-                        .opacity(canSend ? 1 : 0.45)
+                        .frame(width: 44, height: 44)
+                        .accentSurface(Circle())
                 }
-                .buttonStyle(.plain)
-                .disabled(!canSend)
+                .buttonStyle(ThemePressStyle())
+                .accessibilityLabel(canSend ? (editing == nil ? "Отправить" : "Сохранить правку") : "Записать голосовое")
+                .disabled(voiceRecorder.isPreparing || (editing != nil && !canSend))
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
+    }
+
+    private var recordingControls: some View {
+        HStack(spacing: 8) {
+            Button { voiceRecorder.cancel() } label: {
+                composerIcon("xmark")
+            }
+            .buttonStyle(ThemePressStyle())
+            .accessibilityLabel("Отменить запись")
+            Label(String(format: "%02d:%02d", Int(voiceRecorder.duration) / 60, Int(voiceRecorder.duration) % 60),
+                  systemImage: "waveform")
+                .monospacedDigit()
+                .foregroundStyle(theme.textPrimary)
+                .accessibilityLabel("Идёт запись")
+            Spacer()
+            Button {
+                guard let draft = voiceRecorder.finish() else { return }
+                tdlib.sendVoiceNote(chatID: chat.id, draft: draft, replyTo: replyTo?.id)
+                replyTo = nil
+            } label: {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 15, weight: .bold))
+                    .frame(width: 44, height: 44)
+                    .foregroundStyle(theme.accent.onAccent)
+                    .accentSurface(Circle())
+            }
+            .buttonStyle(ThemePressStyle())
+            .accessibilityLabel("Отправить голосовое")
         }
-        .background(theme.background.opacity(0.94))
+        .padding(9)
+    }
+
+    private func toggleStickers() {
+        if !showStickers { inputFocused = false }
+        withAnimation(transitionAnimation) { showStickers.toggle() }
+    }
+
+    private func sendSticker(_ sticker: RealSticker) {
+        tdlib.sendSticker(sticker, chatID: chat.id, replyTo: replyTo?.id)
+        replyTo = nil
+        withAnimation(transitionAnimation) { showStickers = false }
     }
 
     private var canSend: Bool {
@@ -580,7 +706,7 @@ struct ChatDetailView: View {
         Image(systemName: name)
             .font(.system(size: 17, weight: .semibold))
             .foregroundColor(theme.textPrimary)
-            .frame(width: 36, height: 36)
+            .frame(width: 44, height: 44)
             .background(Circle().fill(theme.field))
     }
 

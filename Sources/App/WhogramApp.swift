@@ -17,12 +17,13 @@ struct WhogramApp: App {
 struct RootView: View {
     @EnvironmentObject var tdlib: TDLibManager
     @EnvironmentObject var theme: ThemeManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var showSplash = true
 
     var body: some View {
         ZStack {
-            theme.background.ignoresSafeArea()
+            ThemeBackdrop()
 
             if tdlib.isAuthorized {
                 MainTabView()
@@ -39,9 +40,10 @@ struct RootView: View {
             }
         }
         .preferredColorScheme(theme.appearance.colorScheme)
+        .tint(theme.accent.main)
         .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
-                withAnimation(.easeInOut(duration: 0.5)) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + (theme.animations && !reduceMotion ? 0.7 : 0)) {
+                withAnimation(theme.animation(.easeInOut(duration: 0.3), reduced: reduceMotion)) {
                     showSplash = false
                 }
             }

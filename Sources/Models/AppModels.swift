@@ -89,6 +89,7 @@ struct RealMessage: Identifiable, Equatable {
     var stickerEmoji: String = ""
     var stickerRemoteID: String = ""
     var stickerFormat: String = ""
+    var stickerSetID: Int64?
     var isPremiumSticker: Bool = false
     var waveform: [CGFloat] = []
     var reply: ReplyPreview?
@@ -277,6 +278,11 @@ struct RealSticker: Identifiable, Equatable {
     var isPlayable: Bool {
         format.localizedCaseInsensitiveContains("tgs") || format.localizedCaseInsensitiveContains("webm")
     }
+}
+
+struct RealStickerPack {
+    let title: String
+    let stickers: [RealSticker]
 }
 
 // MARK: - Группировка сообщений по дням

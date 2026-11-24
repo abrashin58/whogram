@@ -2,25 +2,19 @@ import SwiftUI
 
 struct SplashView: View {
     @EnvironmentObject var theme: ThemeManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var animate = false
 
     var body: some View {
         ZStack {
-            theme.background.ignoresSafeArea()
-
-            Circle()
-                .fill(theme.accent.main.opacity(0.32))
-                .frame(width: 280, height: 280)
-                .blur(radius: 90)
-                .offset(y: -90)
-                .scaleEffect(animate ? 1.08 : 0.85)
+            ThemeBackdrop()
 
             VStack(spacing: 14) {
                 ZStack {
                     Circle()
-                        .fill(theme.accent.gradient)
+                        .fill(.clear)
                         .frame(width: 92, height: 92)
-                        .shadow(color: theme.accent.main.opacity(0.5), radius: 28, y: 12)
+                        .accentSurface(Circle())
 
                     Image(systemName: "paperplane.fill")
                         .font(.system(size: 36, weight: .semibold))
@@ -40,7 +34,7 @@ struct SplashView: View {
             .opacity(animate ? 1 : 0.4)
         }
         .onAppear {
-            withAnimation(.easeOut(duration: 0.9)) {
+            withAnimation(theme.animation(.easeOut(duration: 0.55), reduced: reduceMotion)) {
                 animate = true
             }
         }

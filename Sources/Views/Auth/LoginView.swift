@@ -4,14 +4,14 @@ import UIKit
 struct LoginView: View {
     @EnvironmentObject var tdlib: TDLibManager
     @EnvironmentObject var theme: ThemeManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var viewModel = AuthViewModel()
 
     @State private var appeared = false
 
     var body: some View {
         ZStack {
-            theme.background.ignoresSafeArea()
-            backgroundOrbs
+            ThemeBackdrop()
 
             ScrollView {
                 VStack(spacing: 22) {
@@ -27,35 +27,18 @@ struct LoginView: View {
             }
         }
         .onAppear {
-            withAnimation(.spring(response: 0.7, dampingFraction: 0.8)) {
+            withAnimation(theme.animation(.spring(response: 0.55, dampingFraction: 0.82), reduced: reduceMotion)) {
                 appeared = true
             }
         }
     }
 
-    private var backgroundOrbs: some View {
-        ZStack {
-            Circle()
-                .fill(theme.accent.main.opacity(0.30))
-                .frame(width: 320, height: 320)
-                .blur(radius: 110)
-                .offset(x: -140, y: -260)
-
-            Circle()
-                .fill(theme.accent.secondary.opacity(0.24))
-                .frame(width: 280, height: 280)
-                .blur(radius: 120)
-                .offset(x: 150, y: 300)
-        }
-        .ignoresSafeArea()
-    }
-
     private var logo: some View {
         ZStack {
             Circle()
-                .fill(theme.accent.gradient)
+                .fill(.clear)
                 .frame(width: 96, height: 96)
-                .shadow(color: theme.accent.main.opacity(0.45), radius: 26, x: 0, y: 14)
+                .accentSurface(Circle())
 
             Image(systemName: "paperplane.fill")
                 .font(.system(size: 38, weight: .semibold))
@@ -72,7 +55,7 @@ struct LoginView: View {
                 .font(.system(size: 34, weight: .bold, design: .rounded))
                 .foregroundStyle(theme.accent.gradient)
 
-            Text("Telegram-клиент на SwiftUI")
+            Text("Войдите в свой аккаунт Telegram")
                 .font(theme.font(12))
                 .foregroundColor(theme.textSecondary)
         }
@@ -179,14 +162,7 @@ struct LoginView: View {
             }
         }
         .padding(18)
-        .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(theme.card.opacity(0.75))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(theme.separator.opacity(0.6), lineWidth: 1)
-        )
+        .liquidGlass(corner: theme.radius)
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 14)
     }
@@ -197,6 +173,7 @@ struct LoginView: View {
         keyboard: UIKeyboardType
     ) -> some View {
         TextField(placeholder, text: text)
+            .textContentType(keyboard == .phonePad ? .telephoneNumber : .oneTimeCode)
             .keyboardType(keyboard)
             .font(theme.textFont)
             .foregroundColor(theme.textPrimary)
@@ -225,13 +202,9 @@ struct LoginView: View {
             .foregroundColor(theme.accent.onAccent)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 14)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(theme.accent.gradient)
-            )
-            .shadow(color: theme.accent.main.opacity(0.35), radius: 14, x: 0, y: 8)
+            .accentSurface(RoundedRectangle(cornerRadius: theme.radius, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ThemePressStyle())
         .disabled(loading)
     }
 }

@@ -2,12 +2,13 @@ name: Build iOS App
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "whogram-2-redesign" ]
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-26
+    timeout-minutes: 40
 
     steps:
     - name: Checkout repository
@@ -20,16 +21,21 @@ jobs:
       run: xcodegen generate
 
     - name: Build App (Unsigned)
+      shell: bash
       run: |
-        xcodebuild clean build \
+        set -o pipefail
+        xcodebuild build \
           -project Whogram.xcodeproj \
           -scheme Whogram \
-          -configuration Release \
+          -configuration Debug \
+          -destination 'generic/platform=iOS' \
           -sdk iphoneos \
+          -jobs 2 \
+          -resultBundlePath Whogram-build.xcresult \
           CODE_SIGN_IDENTITY="" \
           CODE_SIGNING_REQUIRED=NO \
           CODE_SIGNING_ALLOWED=NO \
-          CONFIGURATION_BUILD_DIR=${{ github.workspace }}/build
+          CONFIGURATION_BUILD_DIR="$GITHUB_WORKSPACE/build" 2>&1 | tee build.log
     - name: Package to IPA
       run: |
         mkdir -p Payload
@@ -40,3 +46,12 @@ jobs:
       with:
         name: Whogram-IPA
         path: Whogram.ipa
+        if-no-files-found: error
+    - name: Upload diagnostics
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs
+        path: |
+          build.log
+          Whogram-build.xcresult

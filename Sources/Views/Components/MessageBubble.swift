@@ -14,6 +14,7 @@ struct MessageBubble: View {
     let onDelete: () -> Void
     let onForward: () -> Void
     let onOpenMedia: () -> Void
+    let onOpenStickerPack: () -> Void
 
     @State private var wantsPlay = false
 
@@ -106,7 +107,7 @@ struct MessageBubble: View {
         VStack(alignment: .leading, spacing: 0) {
             ZStack(alignment: .bottomTrailing) {
                 TdImage(
-                    fileID: message.mediaFileID,
+                    fileID: message.kind == .photo ? message.mediaFileID : nil,
                     previewFileID: message.previewFileID,
                     previewData: message.previewData,
                     priority: 16
@@ -136,7 +137,10 @@ struct MessageBubble: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .contentShape(Rectangle())
-            .onTapGesture { onOpenMedia() }
+            .onTapGesture(perform: onOpenMedia)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel(message.kind.placeholder)
+            .accessibilityAction { onOpenMedia() }
 
             if !message.text.isEmpty {
                 Text(message.text)
@@ -157,25 +161,28 @@ struct MessageBubble: View {
 
     private var stickerContent: some View {
         VStack(alignment: .trailing, spacing: 2) {
-            ZStack {
-                Text(message.stickerEmoji)
-                    .font(.system(size: 92))
-
-                if shouldRenderStickerImage {
-                    TdImage(
-                        fileID: message.mediaFileID,
-                        previewFileID: message.previewFileID,
-                        previewData: nil,
-                        priority: 32,
-                        showsPlaceholder: false
-                    )
-                    .frame(width: 158, height: 158)
-                }
+            if message.stickerSetID != nil {
+                Button(action: onOpenStickerPack) { stickerArtwork }
+                    .buttonStyle(ThemePressStyle())
+                    .accessibilityLabel("Открыть набор стикеров \(message.stickerEmoji)")
+            } else {
+                stickerArtwork
             }
-            .frame(width: 168, height: 168)
 
             footer
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(bubbleBackground)
         }
+    }
+
+    private var stickerArtwork: some View {
+        TdImage(fileID: shouldRenderStickerImage ? message.mediaFileID : nil,
+                previewFileID: message.previewFileID, previewData: nil, priority: 24,
+                showsPlaceholder: false, contentMode: .fit, fallbackEmoji: message.stickerEmoji)
+        .frame(width: 158, height: 158)
+        .frame(width: 168, height: 168)
+        .contentShape(Rectangle())
     }
 
     private var voiceContent: some View {
@@ -197,14 +204,15 @@ struct MessageBubble: View {
                 } label: {
                     ZStack {
                         Circle()
-                            .fill(theme.accent.main.opacity(0.18))
+                            .fill(textColor.opacity(0.16))
                             .frame(width: 38, height: 38)
                         Image(systemName: isCurrentPlaying ? "pause.fill" : "play.fill")
                             .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(theme.accent.main)
+                            .foregroundColor(textColor)
                     }
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(isCurrentPlaying ? "Пауза" : "Воспроизвести")
 
                 waveformView
 
@@ -451,6 +459,12 @@ struct MessageBubble: View {
 
     @ViewBuilder
     private var menu: some View {
+        if [.audio, .voice, .document].contains(message.kind), message.mediaFileID != nil {
+            Button(action: onOpenMedia) {
+                Label("Открыть файл", systemImage: "arrow.up.right.square")
+            }
+        }
+
         Button {
             onReply()
         } label: {
@@ -500,23 +514,8 @@ struct MessageBubble: View {
 
     // MARK: - Вычисления
 
-    private var bubbleFill: AnyShapeStyle {
-        if isOutgoing {
-            return AnyShapeStyle(theme.accent.gradient)
-        }
-        if theme.bubbleStyle == .glass {
-            return AnyShapeStyle(Material.ultraThinMaterial)
-        }
-        return AnyShapeStyle(theme.incomingBubble)
-    }
-
     private var bubbleBackground: some View {
-        RoundedRectangle(cornerRadius: theme.bubbleCorner, style: .continuous)
-            .fill(bubbleFill)
-            .overlay(
-                RoundedRectangle(cornerRadius: theme.bubbleCorner, style: .continuous)
-                    .stroke(Color.white.opacity(theme.bubbleStyle == .glass ? 0.14 : 0), lineWidth: 1)
-            )
+        MessageSurface(outgoing: isOutgoing)
     }
 
     private var mediaWidth: CGFloat {
@@ -571,9 +570,9 @@ struct MessageBubble: View {
     }
 
     private func barColor(index: Int) -> Color {
-        guard isCurrentPlaying else { return theme.accent.main.opacity(0.55) }
+        guard isCurrentPlaying else { return textColor.opacity(0.45) }
         let fraction = Double(index) / Double(max(bars.count, 1))
-        return fraction <= audio.progress ? theme.accent.main : theme.textSecondary.opacity(0.35)
+        return fraction <= audio.progress ? textColor : textColor.opacity(0.34)
     }
 
     private var senderDisplayName: String {
@@ -613,7 +612,11 @@ struct MessageBubble: View {
         guard let id = message.mediaFileID else { return }
 
         if let path = tdlib.filePaths[id] {
-            audio.toggle(messageID: message.id, url: URL(fileURLWithPath: path))
+            if audio.toggle(messageID: message.id, url: URL(fileURLWithPath: path)) {
+                tdlib.markMediaOpened(message)
+            } else {
+                onOpenMedia()
+            }
             return
         }
 
@@ -632,6 +635,10 @@ struct MessageBubble: View {
               let id = message.mediaFileID,
               let path = tdlib.filePaths[id] else { return }
         wantsPlay = false
-        audio.play(messageID: message.id, url: URL(fileURLWithPath: path))
+        if audio.play(messageID: message.id, url: URL(fileURLWithPath: path)) {
+            tdlib.markMediaOpened(message)
+        } else {
+            onOpenMedia()
+        }
     }
 }

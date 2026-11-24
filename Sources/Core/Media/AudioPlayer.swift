@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import Foundation
 
 final class AudioPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
@@ -16,15 +17,22 @@ final class AudioPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         super.init()
     }
 
-    func toggle(messageID: Int64, url: URL) {
-        if playingMessageID == messageID {
-            stop()
-            return
+    @discardableResult
+    func toggle(messageID: Int64, url: URL) -> Bool {
+        if playingMessageID == messageID, let player {
+            if player.isPlaying {
+                player.pause()
+                isPlaying = false
+                return true
+            }
+            isPlaying = player.play()
+            return isPlaying
         }
-        play(messageID: messageID, url: url)
+        return play(messageID: messageID, url: url)
     }
 
-    func play(messageID: Int64, url: URL) {
+    @discardableResult
+    func play(messageID: Int64, url: URL) -> Bool {
         stop()
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
@@ -33,7 +41,7 @@ final class AudioPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
             let player = try AVAudioPlayer(contentsOf: url)
             player.delegate = self
             player.prepareToPlay()
-            player.play()
+            guard player.play() else { return false }
 
             self.player = player
             playingMessageID = messageID
@@ -41,12 +49,15 @@ final class AudioPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
             duration = player.duration
             progress = 0
 
-            timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
                 guard let self = self, let player = self.player, player.duration > 0 else { return }
-                self.progress = player.currentTime / player.duration
+                let value = player.currentTime / player.duration
+                if self.progress != value { self.progress = value }
             }
+            return true
         } catch {
             stop()
+            return false
         }
     }
 
@@ -58,6 +69,7 @@ final class AudioPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         playingMessageID = nil
         isPlaying = false
         progress = 0
+        duration = 0
     }
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {

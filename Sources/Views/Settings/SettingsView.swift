@@ -24,7 +24,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                theme.background.ignoresSafeArea()
+                ThemeBackdrop()
 
                 ScrollView {
                     VStack(spacing: 18) {
@@ -38,31 +38,26 @@ struct SettingsView: View {
                                 settingRow(
                                     icon: "paintpalette.fill",
                                     color: theme.accent.main,
-                                    title: "Тема и цвета",
-                                    value: theme.accent.title
+                                    title: "Design Lab",
+                                    value: theme.preset.title
                                 )
                             }
                             .buttonStyle(.plain)
 
                             Divider().overlay(theme.separator)
 
-                            HStack {
-                                settingIcon("photo.on.rectangle", color: Color(hex: 0x8E7CFF))
-                                Text("Обои чата")
-                                    .font(theme.font(14))
-                                    .foregroundColor(theme.textPrimary)
-                                Spacer()
-                                Text(theme.wallpaper.title)
-                                    .font(theme.font(12))
-                                    .foregroundColor(theme.textSecondary)
+                            NavigationLink {
+                                AppearanceView(destination: .wallpaper)
+                            } label: {
+                                settingRow(icon: "photo.on.rectangle", color: Color(hex: 0x8E7CFF),
+                                           title: "Обои чата", value: theme.wallpaper.title)
                             }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 12)
+                            .buttonStyle(.plain)
 
                             Divider().overlay(theme.separator)
 
                             NavigationLink {
-                                AppearanceView()
+                                AppearanceView(destination: .typography)
                             } label: {
                                 settingRow(
                                     icon: "textformat.size",
@@ -101,11 +96,11 @@ struct SettingsView: View {
                         }
 
                         section(title: "О приложении") {
-                            infoRow("Приложение", "Whogram 1.0")
+                            infoRow("Приложение", "Whogram \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.0")")
                             Divider().overlay(theme.separator)
                             infoRow("TDLib", "1.8.70")
                             Divider().overlay(theme.separator)
-                            infoRow("Тема", "\(theme.accent.title) · \(theme.appearance.title)")
+                            infoRow("Тема", "\(theme.preset.title) · \(theme.appearance.title)")
                         }
 
                         Text("Сделано на SwiftUI + TDLib")
@@ -184,16 +179,9 @@ struct SettingsView: View {
                     .foregroundColor(theme.accent.onAccent.opacity(0.8))
             }
             .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(theme.accent.gradient)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(Color.white.opacity(0.16), lineWidth: 1)
-            )
+            .accentSurface(RoundedRectangle(cornerRadius: theme.radius, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ThemePressStyle())
     }
 
     private func settingIcon(_ name: String, color: Color) -> some View {
@@ -250,14 +238,7 @@ struct SettingsView: View {
             VStack(spacing: 0) {
                 content()
             }
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(theme.card)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(theme.separator.opacity(0.6), lineWidth: 1)
-            )
+            .liquidGlass(corner: theme.radius)
         }
     }
 }

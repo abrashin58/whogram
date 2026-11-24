@@ -30,6 +30,7 @@ enum ChatFolder: String, CaseIterable, Identifiable {
 struct ChatListView: View {
     @EnvironmentObject var tdlib: TDLibManager
     @EnvironmentObject var theme: ThemeManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @Binding var path: NavigationPath
     var onOpenSettings: () -> Void
@@ -55,14 +56,16 @@ struct ChatListView: View {
     var body: some View {
         NavigationStack(path: $path) {
             ZStack {
-                theme.background.ignoresSafeArea()
+                ThemeBackdrop()
 
                 VStack(spacing: 0) {
                     header
                     searchField
                     folderBar
 
-                    if filteredChats.isEmpty {
+                    if tdlib.isLoadingChats && tdlib.chats.isEmpty {
+                        ScrollView { ChatSkeleton(count: 6).padding(14) }
+                    } else if filteredChats.isEmpty {
                         emptyState
                     } else {
                         chatsList
@@ -75,7 +78,7 @@ struct ChatListView: View {
                     ChatDetailView(chat: chat)
                 } else {
                     ZStack {
-                        theme.background.ignoresSafeArea()
+                        ThemeBackdrop()
                         Text("Чат не найден")
                             .foregroundColor(theme.textSecondary)
                     }
@@ -102,9 +105,14 @@ struct ChatListView: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("Whogram")
-                    .font(theme.font(30, weight: .bold))
-                    .foregroundStyle(theme.accent.gradient)
+                Text("WHOGRAM / INBOX")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .tracking(1.7)
+                    .foregroundStyle(theme.accent.main)
+                Text("Чаты")
+                    .font(theme.font(34, weight: .bold))
+                    .foregroundStyle(theme.textPrimary)
+                    .accessibilityAddTraits(.isHeader)
 
                 Text(headerSubtitle)
                     .font(theme.font(12))
@@ -120,10 +128,12 @@ struct ChatListView: View {
                     title: meName,
                     fileID: tdlib.me?.photoFileID,
                     preview: tdlib.me?.photoPreview,
-                    size: 42
+                    size: 44,
+                    highlight: true
                 )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(ThemePressStyle())
+            .accessibilityLabel("Профиль и настройки")
         }
         .padding(.horizontal, 18)
         .padding(.top, 8)
@@ -134,9 +144,10 @@ struct ChatListView: View {
         if totalUnread > 0 {
             return "\(totalUnread) \(unreadWord(totalUnread))"
         }
-        if tdlib.chats.isEmpty {
+        if tdlib.isLoadingChats && tdlib.chats.isEmpty {
             return "Загрузка чатов…"
         }
+        if tdlib.chats.isEmpty { return "Telegram" }
         return "Все сообщения прочитаны"
     }
 
@@ -190,7 +201,7 @@ struct ChatListView: View {
             HStack(spacing: 8) {
                 ForEach(ChatFolder.allCases) { item in
                     Button {
-                        withAnimation(.easeOut(duration: 0.18)) {
+                        withAnimation(theme.animation(.easeOut(duration: 0.18), reduced: reduceMotion)) {
                             folder = item
                         }
                     } label: {
@@ -216,17 +227,21 @@ struct ChatListView: View {
                         }
                         .foregroundColor(folder == item ? theme.accent.onAccent : theme.textSecondary)
                         .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(
-                            Capsule()
-                                .fill(folder == item ? AnyShapeStyle(theme.accent.gradient) : AnyShapeStyle(theme.card))
-                        )
+                        .frame(minHeight: 44)
+                        .background {
+                            if folder == item {
+                                Capsule().fill(.clear).accentSurface(Capsule())
+                            } else {
+                                Capsule().fill(theme.card)
+                            }
+                        }
                         .overlay(
                             Capsule()
                                 .stroke(theme.separator.opacity(folder == item ? 0 : 1), lineWidth: 1)
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(ThemePressStyle())
+                    .accessibilityAddTraits(folder == item ? .isSelected : [])
                 }
             }
             .padding(.horizontal, 18)
@@ -244,12 +259,12 @@ struct ChatListView: View {
 
     private var chatsList: some View {
         ScrollView {
-            LazyVStack(spacing: 8) {
+            LazyVStack(spacing: theme.compact ? 4 : 8) {
                 ForEach(filteredChats) { chat in
                     NavigationLink(value: chat.id) {
                         ChatRow(chat: chat, preview: preview(for: chat))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(ThemePressStyle())
                     .contextMenu {
                         Button {
                             tdlib.togglePin(chat)
@@ -297,15 +312,9 @@ struct ChatListView: View {
     private var emptyState: some View {
         VStack(spacing: 10) {
             Spacer()
-            Image(systemName: "bubble.left.and.bubble.right")
-                .font(.system(size: 42, weight: .light))
-                .foregroundColor(theme.textSecondary.opacity(0.6))
-
-            Text(emptyText)
-                .font(theme.font(13))
-                .foregroundColor(theme.textSecondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 40)
+            ThemeEmptyState(icon: "bubble.left.and.bubble.right",
+                            title: searchText.isEmpty ? "Нет чатов" : "Нет результатов",
+                            detail: emptyText)
 
             if tdlib.chats.isEmpty {
                 Button {
@@ -315,10 +324,10 @@ struct ChatListView: View {
                         .font(theme.font(13, weight: .semibold))
                         .foregroundColor(theme.accent.onAccent)
                         .padding(.horizontal, 18)
-                        .padding(.vertical, 9)
-                        .background(Capsule().fill(theme.accent.gradient))
+                        .frame(minHeight: 44)
+                        .accentSurface(Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ThemePressStyle())
                 .padding(.top, 4)
             }
 
@@ -370,7 +379,7 @@ struct ChatRow: View {
                 title: chat.title,
                 fileID: chat.photoFileID ?? user?.photoFileID,
                 preview: chat.photoPreview ?? user?.photoPreview,
-                size: 56,
+                size: theme.compact ? 39 : 53,
                 isOnline: user?.isOnline ?? false,
                 highlight: chat.unreadCount > 0
             )
@@ -431,13 +440,14 @@ struct ChatRow: View {
                 }
             }
         }
-        .padding(10)
+        .padding(.horizontal, 10)
+        .padding(.vertical, theme.compact ? 6 : 10)
         .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(theme.card.opacity(0.92))
+            RoundedRectangle(cornerRadius: theme.radius, style: .continuous)
+                .fill(theme.card)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
+            RoundedRectangle(cornerRadius: theme.radius, style: .continuous)
                 .stroke(chat.unreadCount > 0 ? theme.accent.main.opacity(0.25) : theme.separator.opacity(0.6), lineWidth: 1)
         )
     }
