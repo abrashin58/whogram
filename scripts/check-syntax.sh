@@ -11,7 +11,10 @@ if ! command -v swiftc >/dev/null 2>&1; then
   exit 1
 fi
 
-mapfile -d '' files < <(find Sources -name '*.swift' -print0 | sort -z)
+files=()
+while IFS= read -r -d '' file; do
+  files+=("$file")
+done < <(find Sources -name '*.swift' -print0)
 
 if [ ${#files[@]} -eq 0 ]; then
   echo "В папке Sources нет .swift файлов." >&2

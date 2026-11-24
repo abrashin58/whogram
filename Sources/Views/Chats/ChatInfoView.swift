@@ -90,7 +90,7 @@ struct ChatInfoView: View {
                 }
                 .padding(20)
             }
-            .background(theme.background)
+            .background(ThemeBackdrop())
             .navigationTitle("Информация")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -170,10 +170,7 @@ struct ChatInfoView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(theme.card)
-            )
+            .liquidGlass(corner: theme.radius)
         }
         .buttonStyle(.plain)
     }
@@ -200,9 +197,6 @@ struct ChatInfoView: View {
                 }
             }
         }
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(theme.card)
-        )
+        .liquidGlass(corner: theme.radius)
     }
 }

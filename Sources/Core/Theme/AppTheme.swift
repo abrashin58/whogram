@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import Combine
+import ImageIO
 
 // MARK: - Цвета
 
@@ -77,87 +78,12 @@ enum AccentPalette: String, CaseIterable, Identifiable {
 
 // MARK: - Тема оформления
 
-enum AppearanceMode: String, CaseIterable, Codable, Identifiable {
-    case dark
-    case light
-    case system
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .dark: return "Тёмная"
-        case .light: return "Светлая"
-        case .system: return "Системная"
-        }
-    }
-
+extension AppearanceMode {
     var colorScheme: ColorScheme? {
         switch self {
         case .dark: return .dark
         case .light: return .light
         case .system: return nil
-        }
-    }
-}
-
-enum BubbleStyle: String, CaseIterable, Codable, Identifiable {
-    case modern
-    case glass
-    case classic
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .modern: return "Современные"
-        case .glass: return "Стекло"
-        case .classic: return "Классика"
-        }
-    }
-}
-
-enum ChatWallpaper: String, CaseIterable, Codable, Identifiable {
-    case aurora
-    case midnight
-    case ocean
-    case sunset
-    case graphite
-    case blossom
-    case pitch
-    case plain
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .aurora: return "Аврора"
-        case .midnight: return "Полночь"
-        case .ocean: return "Глубина"
-        case .sunset: return "Тепло"
-        case .graphite: return "Графит"
-        case .blossom: return "Сакура"
-        case .pitch: return "Чёрный"
-        case .plain: return "Без градиента"
-        }
-    }
-
-    var rgb: [UInt32] {
-        switch self {
-        case .aurora:
-            return [0x17274E, 0x321957, 0x113D35]
-        case .midnight:
-            return [0x05070C, 0x0D1422]
-        case .ocean:
-            return [0x102236, 0x145471]
-        case .sunset:
-            return [0x59182D, 0x67321A]
-        case .graphite:
-            return [0x0C0D10, 0x292C34]
-        case .blossom:
-            return [0x281038, 0x581746]
-        case .pitch, .plain:
-            return [0x000000, 0x000000]
         }
     }
 }
@@ -189,21 +115,18 @@ struct ThemeTint {
 }
 
 final class ThemeManager: ObservableObject {
-    private struct State: Codable {
-        var preset: ThemePreset
-        var custom: ThemeProfile?
-    }
     private static let storageKey = "whogram.design.v2"
     private let defaults: UserDefaults
-    @Published private var state: State {
+    @Published private var state: ThemeSelection {
         didSet { persist() }
     }
+    @Published private(set) var wallpaperImage: UIImage?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         if let data = defaults.data(forKey: Self.storageKey),
-           let saved = try? JSONDecoder().decode(State.self, from: data) {
-            state = State(preset: saved.preset, custom: saved.custom?.validated)
+           let saved = try? JSONDecoder().decode(ThemeSelection.self, from: data) {
+            state = ThemeSelection(preset: saved.preset, custom: saved.custom?.validated)
         } else if ["accent", "appearance", "wallpaper", "bubbleStyle", "fontScale", "largeEmoji", "animations"]
             .contains(where: { defaults.object(forKey: "theme.\($0)") != nil }) {
             var profile = ThemePreset.neonPulse.profile
@@ -217,10 +140,13 @@ final class ThemeManager: ObservableObject {
             profile.largeEmoji = defaults.object(forKey: "theme.largeEmoji") as? Bool ?? true
             profile.motion = defaults.object(forKey: "theme.animations") as? Bool ?? true
             profile.surface = .glass
-            state = State(preset: .custom, custom: profile.validated)
+            state = ThemeSelection(preset: .custom, custom: profile.validated)
             persist()
         } else {
-            state = State(preset: .neonPulse, custom: nil)
+            state = ThemeSelection(preset: .neonPulse, custom: nil)
+        }
+        if let url = Self.wallpaperURL {
+            wallpaperImage = UIImage(contentsOfFile: url.path)
         }
     }
 
@@ -229,21 +155,63 @@ final class ThemeManager: ObservableObject {
     }
 
     var preset: ThemePreset { state.preset }
-    var profile: ThemeProfile { preset == .custom ? (state.custom ?? preset.profile) : preset.profile }
+    var profile: ThemeProfile { state.active }
+    var customProfile: ThemeProfile? { state.custom }
 
     func select(_ preset: ThemePreset) {
         guard preset != self.preset else { return }
-        state = State(preset: preset, custom: state.custom ?? (preset == .custom ? profile : nil))
+        state.select(preset)
     }
 
     func edit(_ edit: (inout ThemeProfile) -> Void) {
-        var profile = profile
-        edit(&profile)
-        state = State(preset: .custom, custom: profile.validated)
+        guard preset == .custom else { return }
+        state.editCustom(edit)
+    }
+
+    func copyToCustom() {
+        state.copyToCustom()
     }
 
     func resetCustom() {
-        state = State(preset: .custom, custom: ThemePreset.neonPulse.profile)
+        state = ThemeSelection(preset: .custom, custom: ThemePreset.neonPulse.profile)
+    }
+
+    private static var wallpaperURL: URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("WhogramDesign", isDirectory: true)
+            .appendingPathComponent("wallpaper.jpg")
+    }
+
+    func saveWallpaper(_ data: Data) throws {
+        guard preset == .custom, let url = Self.wallpaperURL,
+              let image = UIImage(data: data) else { throw WallpaperError.invalidImage }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        wallpaperImage = image
+        edit { $0.usesLocalPhoto = true }
+    }
+
+    func removeWallpaper() throws {
+        if let url = Self.wallpaperURL, FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+        wallpaperImage = nil
+        edit { $0.usesLocalPhoto = nil }
+    }
+
+    static func wallpaperJPEG(_ data: Data) -> Data? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 1600
+              ] as CFDictionary) else { return nil }
+        return UIImage(cgImage: thumbnail).jpegData(compressionQuality: 0.82)
+    }
+
+    enum WallpaperError: LocalizedError {
+        case invalidImage
+        var errorDescription: String? { "Не удалось открыть выбранную фотографию." }
     }
 
     var appearance: AppearanceMode { profile.appearance }

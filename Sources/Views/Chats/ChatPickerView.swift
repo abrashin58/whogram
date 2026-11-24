@@ -53,7 +53,7 @@ struct ChatPickerView: View {
                 }
                 .padding(.vertical, 6)
             }
-            .background(theme.background)
+            .background(ThemeBackdrop())
             .searchable(text: $query, prompt: "Поиск чата")
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)

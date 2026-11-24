@@ -4,6 +4,12 @@ on:
   push:
     branches: [ "main", "whogram-2-redesign" ]
   workflow_dispatch:
+    inputs:
+      configuration:
+        description: Xcode build configuration
+        type: choice
+        options: [Debug, Release]
+        default: Debug
 
 jobs:
   build:
@@ -20,14 +26,21 @@ jobs:
     - name: Generate Xcode Project
       run: xcodegen generate
 
+    - name: Check Swift sources and core logic
+      run: |
+        bash scripts/check-syntax.sh
+        bash scripts/check-core.sh
+
     - name: Build App (Unsigned)
       shell: bash
+      env:
+        BUILD_CONFIGURATION: ${{ inputs.configuration || 'Debug' }}
       run: |
         set -o pipefail
         xcodebuild build \
           -project Whogram.xcodeproj \
           -scheme Whogram \
-          -configuration Debug \
+          -configuration "$BUILD_CONFIGURATION" \
           -destination 'generic/platform=iOS' \
           -sdk iphoneos \
           -jobs 2 \

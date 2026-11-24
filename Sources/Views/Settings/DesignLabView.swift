@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import PhotosUI
 
 struct AppearanceView: View {
     enum Destination: String { case themes, wallpaper, typography }
@@ -7,6 +8,10 @@ struct AppearanceView: View {
     @EnvironmentObject private var theme: ThemeManager
     @Environment(\.accessibilityReduceMotion) private var reducedMotion
     @State private var confirmReset = false
+    @State private var confirmCopy = false
+    @State private var wallpaperItem: PhotosPickerItem?
+    @State private var wallpaperFailure: String?
+    @State private var loadingPhoto = false
     var destination: Destination = .themes
 
     var body: some View {
@@ -16,21 +21,23 @@ struct AppearanceView: View {
                     preview
                     section("Коллекция тем", icon: "square.grid.2x2") { presets }
                         .id(Destination.themes)
-                    section("Цвета", icon: "paintpalette") { colors }
-                    section("Поверхности и сообщения", icon: "square.stack.3d.up") { surfaces }
-                    section("Фон чата", icon: "photo") { wallpapers }
-                        .id(Destination.wallpaper)
-                    section("Типографика", icon: "textformat.size") { typography }
-                        .id(Destination.typography)
-                    section("Движение и плотность", icon: "waveform.path") { effects }
+                    if theme.preset != .custom { copyControl }
+                    Group {
+                        section("Цвета", icon: "paintpalette") { colors }
+                        section("Поверхности и сообщения", icon: "square.stack.3d.up") { surfaces }
+                        section("Фон чата", icon: "photo") { wallpapers }
+                            .id(Destination.wallpaper)
+                        section("Типографика", icon: "textformat.size") { typography }
+                            .id(Destination.typography)
+                        section("Движение и плотность", icon: "waveform.path") { effects }
+                    }
+                    .disabled(theme.preset != .custom)
 
-                    Button("Сбросить Custom", role: .destructive) { confirmReset = true }
-                        .font(theme.font(14, weight: .semibold))
-                        .frame(minHeight: 44)
-                        .disabled(theme.preset != .custom)
-                    Text("Правки текущей темы сохраняются в Custom. Готовые темы не меняются.")
-                        .font(theme.smallFont)
-                        .foregroundStyle(theme.textSecondary)
+                    if theme.preset == .custom {
+                        Button("Сбросить Custom", role: .destructive) { confirmReset = true }
+                            .font(theme.font(14, weight: .semibold))
+                            .frame(minHeight: 44)
+                    }
                 }
                 .padding(16)
             }
@@ -47,6 +54,64 @@ struct AppearanceView: View {
         } message: {
             Text("В Custom будут восстановлены настройки Neon Pulse.")
         }
+        .confirmationDialog("Заменить сохранённую тему Custom?", isPresented: $confirmCopy) {
+            Button("Заменить", role: .destructive) { theme.copyToCustom() }
+        } message: {
+            Text("Настройки текущего пресета станут основой для Custom.")
+        }
+        .alert("Не удалось сохранить обои", isPresented: Binding(
+            get: { wallpaperFailure != nil }, set: { if !$0 { wallpaperFailure = nil } }
+        )) {
+            Button("Закрыть", role: .cancel) { wallpaperFailure = nil }
+        } message: {
+            Text(wallpaperFailure ?? "")
+        }
+        .task(id: wallpaperItem) {
+            guard let item = wallpaperItem else { return }
+            loadingPhoto = true
+            defer {
+                if wallpaperItem == item {
+                    loadingPhoto = false
+                    wallpaperItem = nil
+                }
+            }
+            do {
+                guard let data = try await item.loadTransferable(type: Data.self) else {
+                    throw ThemeManager.WallpaperError.invalidImage
+                }
+                let jpeg = await Task.detached(priority: .userInitiated) { ThemeManager.wallpaperJPEG(data) }.value
+                try Task.checkCancellation()
+                guard theme.preset == .custom else { return }
+                guard let jpeg else { throw ThemeManager.WallpaperError.invalidImage }
+                try theme.saveWallpaper(jpeg)
+            } catch is CancellationError {
+                return
+            } catch {
+                wallpaperFailure = error.localizedDescription
+            }
+        }
+    }
+
+    private var copyControl: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Готовая тема").font(theme.font(16, weight: .semibold)).foregroundStyle(theme.textPrimary)
+            Text("Скопируйте пресет в Custom, чтобы настроить его. Готовые темы остаются неизменными.")
+                .font(theme.smallFont).foregroundStyle(theme.textSecondary)
+            Button {
+                if theme.customProfile != nil { confirmCopy = true } else { theme.copyToCustom() }
+            } label: {
+                Label("Копировать в Custom", systemImage: "square.on.square")
+                    .font(theme.font(13, weight: .semibold))
+                    .foregroundStyle(theme.accent.onAccent)
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 44)
+                    .accentSurface(Capsule())
+            }
+            .buttonStyle(ThemePressStyle())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .liquidGlass(corner: theme.radius)
     }
 
     private var preview: some View {
@@ -95,7 +160,7 @@ struct AppearanceView: View {
     private var presets: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 135), spacing: 8)], spacing: 8) {
             ForEach(ThemePreset.allCases) { preset in
-                let profile = preset == .custom && theme.preset == .custom ? theme.profile : preset.profile
+                let profile = preset == .custom ? (theme.customProfile ?? preset.profile) : preset.profile
                 let selected = theme.preset == preset
                 Button {
                     withAnimation(theme.animation(.spring(response: 0.32, dampingFraction: 0.86), reduced: reducedMotion)) {
@@ -104,13 +169,14 @@ struct AppearanceView: View {
                 } label: {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Image(systemName: preset.icon).foregroundStyle(Color(hex: profile.accentStart))
+                            Image(systemName: preset.icon)
+                                .foregroundStyle(Color(hex: ThemeContrast.readable(profile.accentStart, on: profile.darkSurface)))
                             Spacer()
                             if selected { Image(systemName: "checkmark.circle.fill").foregroundStyle(Color(hex: profile.accentStart)) }
                         }
                         Text(preset.title)
                             .font(theme.font(12, weight: .semibold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Color(hex: ThemeContrast.foreground(on: profile.darkSurface)))
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     .padding(11)
@@ -199,14 +265,14 @@ struct AppearanceView: View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 83), spacing: 8)], spacing: 8) {
                 ForEach(ChatWallpaper.allCases) { wallpaper in
                     Button {
-                        theme.edit { $0.wallpaper = wallpaper }
+                        theme.edit { $0.wallpaper = wallpaper; $0.usesLocalPhoto = nil }
                     } label: {
                         VStack(spacing: 4) {
                             LinearGradient(colors: wallpaper.rgb.map { Color(hex: $0) },
                                            startPoint: .topLeading, endPoint: .bottomTrailing)
                                 .frame(height: 42)
                                 .overlay {
-                                    if wallpaper == theme.wallpaper {
+                                    if wallpaper == theme.wallpaper && theme.profile.usesLocalPhoto != true {
                                         Image(systemName: "checkmark.circle.fill").foregroundStyle(.white)
                                     }
                                 }
@@ -217,11 +283,30 @@ struct AppearanceView: View {
                         .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(ThemePressStyle())
-                    .accessibilityAddTraits(wallpaper == theme.wallpaper ? .isSelected : [])
+                    .accessibilityAddTraits(wallpaper == theme.wallpaper && theme.profile.usesLocalPhoto != true ? .isSelected : [])
                 }
             }
-            slider("Насыщенность фона", value: \.wallpaperStrength, range: 0...1, step: 0.05)
-                .disabled(theme.wallpaper == .plain)
+            slider(theme.profile.usesLocalPhoto == true ? "Видимость фото" : "Насыщенность фона",
+                   value: \.wallpaperStrength, range: 0...1, step: 0.05)
+                .disabled(theme.wallpaper == .plain && theme.profile.usesLocalPhoto != true)
+            PhotosPicker(selection: $wallpaperItem, matching: .images) {
+                Label(loadingPhoto ? "Подготовка фото…" : "Выбрать фото из галереи", systemImage: "photo.badge.plus")
+                    .font(theme.font(14, weight: .semibold))
+                    .frame(minHeight: 44)
+            }
+            .disabled(loadingPhoto)
+            if theme.wallpaperImage != nil {
+                if theme.profile.usesLocalPhoto != true {
+                    Button("Вернуть выбранное фото") { theme.edit { $0.usesLocalPhoto = true } }.frame(minHeight: 44)
+                }
+                Button("Удалить сохранённое фото", role: .destructive) {
+                    do { try theme.removeWallpaper() } catch { wallpaperFailure = error.localizedDescription }
+                }
+                .frame(minHeight: 44)
+            }
+            Text("Фото остаётся на этом устройстве и не отправляется в Telegram.")
+                .font(theme.smallFont)
+                .foregroundStyle(theme.textSecondary)
         }
     }
 

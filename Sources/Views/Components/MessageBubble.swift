@@ -19,6 +19,7 @@ struct MessageBubble: View {
     @State private var wantsPlay = false
 
     private var isOutgoing: Bool { message.isOutgoing }
+    private var isFloatingEmoji: Bool { message.emojiOnly && theme.largeEmoji && message.reply == nil }
     private var textColor: Color { isOutgoing ? theme.outgoingText : theme.textPrimary }
     private var footerColor: Color { isOutgoing ? theme.outgoingText.opacity(0.72) : theme.textSecondary }
 
@@ -96,11 +97,18 @@ struct MessageBubble: View {
             }
 
             footer
+                .padding(.horizontal, isFloatingEmoji ? 7 : 0)
+                .padding(.vertical, isFloatingEmoji ? 3 : 0)
+                .background {
+                    if isFloatingEmoji { bubbleBackground }
+                }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .frame(maxWidth: 280, alignment: .leading)
-        .background(bubbleBackground)
+        .background {
+            if !isFloatingEmoji { bubbleBackground }
+        }
     }
 
     private var mediaContent: some View {

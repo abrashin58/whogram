@@ -67,6 +67,16 @@ struct WallpaperView: View {
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
+            if theme.profile.usesLocalPhoto == true, let image = theme.wallpaperImage {
+                GeometryReader { proxy in
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .clipped()
+                }
+                .opacity(theme.profile.wallpaperStrength)
+            }
             if theme.wallpaper != .plain && theme.glow > 0 && !reduceTransparency {
                 RadialGradient(colors: [theme.accent.secondary.opacity(theme.glow * theme.profile.wallpaperStrength), .clear],
                                center: .bottomTrailing, startRadius: 0, endRadius: 320)

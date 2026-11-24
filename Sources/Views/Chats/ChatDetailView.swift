@@ -65,7 +65,9 @@ struct ChatDetailView: View {
                     searchBar
                 }
 
-                if showChatSearch && !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty {
+                if let olderSearchResult {
+                    searchResultPreview(olderSearchResult)
+                } else if showChatSearch && !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty {
                     searchResults
                 } else {
                     messagesList
@@ -128,22 +130,6 @@ struct ChatDetailView: View {
         }
         .sheet(item: $stickerPack) { pack in
             StickerPackView(setID: pack.id, onSticker: sendSticker)
-        }
-        .sheet(item: $olderSearchResult) { message in
-            NavigationStack {
-                ScrollView {
-                    bubble(for: message, showsSender: liveChat.isGroup)
-                        .padding(14)
-                }
-                .background { WallpaperView().ignoresSafeArea() }
-                .navigationTitle("Результат поиска")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Закрыть") { olderSearchResult = nil }
-                    }
-                }
-            }
         }
         .sheet(item: $forwardTarget) { message in
             ChatPickerView(title: "Переслать") { target in
@@ -241,6 +227,7 @@ struct ChatDetailView: View {
             Spacer()
 
             Button {
+                olderSearchResult = nil
                 withAnimation(transitionAnimation) {
                     showChatSearch.toggle()
                 }
@@ -554,6 +541,26 @@ struct ChatDetailView: View {
         }
     }
 
+    private func searchResultPreview(_ message: RealMessage) -> some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                HStack {
+                    Label("Результат поиска", systemImage: "magnifyingglass")
+                        .font(theme.font(13, weight: .semibold))
+                    Spacer()
+                    Button("К переписке") { olderSearchResult = nil }
+                        .font(theme.smallFont)
+                        .frame(minHeight: 44)
+                }
+                .foregroundStyle(theme.textPrimary)
+                .padding(.horizontal, 10)
+                .liquidGlass(corner: theme.radius)
+                bubble(for: message, showsSender: liveChat.isGroup)
+            }
+            .padding(10)
+        }
+    }
+
     // MARK: - Поле ввода
 
     private var composer: some View {
@@ -764,7 +771,9 @@ struct ChatDetailView: View {
 
     private func sendPhoto(_ item: PhotosPickerItem) async {
         guard let data = try? await item.loadTransferable(type: Data.self),
-              let image = UIImage(data: data) else {
+              let image = UIImage(data: data),
+              let jpeg = image.jpegData(compressionQuality: 0.90) else {
+            tdlib.errorMessage = "Не удалось открыть выбранное фото"
             photoItem = nil
             return
         }
@@ -773,7 +782,7 @@ struct ChatDetailView: View {
             .appendingPathComponent("whogram-\(UUID().uuidString).jpg")
 
         do {
-            try data.write(to: url)
+            try jpeg.write(to: url, options: .atomic)
             let width = Int(image.size.width * image.scale)
             let height = Int(image.size.height * image.scale)
             tdlib.sendPhoto(
@@ -799,16 +808,16 @@ struct ChatDetailView: View {
             if accessed { url.stopAccessingSecurityScopedResource() }
         }
 
-        let destination = FileManager.default.temporaryDirectory
-            .appendingPathComponent(url.lastPathComponent)
-
-        try? FileManager.default.removeItem(at: destination)
-
+        let stagingFolder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("whogram-upload-\(UUID().uuidString)", isDirectory: true)
+        let destination = stagingFolder.appendingPathComponent(url.lastPathComponent)
         do {
+            try FileManager.default.createDirectory(at: stagingFolder, withIntermediateDirectories: true)
             try FileManager.default.copyItem(at: url, to: destination)
             tdlib.sendDocument(chatID: chat.id, path: destination.path, replyTo: replyTo?.id)
             replyTo = nil
         } catch {
+            try? FileManager.default.removeItem(at: stagingFolder)
             tdlib.errorMessage = "Не удалось отправить файл"
         }
     }

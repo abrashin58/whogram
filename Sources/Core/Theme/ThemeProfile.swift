@@ -1,5 +1,83 @@
 import Foundation
 
+enum AppearanceMode: String, CaseIterable, Codable, Identifiable {
+    case dark, light, system
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .dark: return "Тёмная"
+        case .light: return "Светлая"
+        case .system: return "Системная"
+        }
+    }
+}
+
+enum BubbleStyle: String, CaseIterable, Codable, Identifiable {
+    case modern, glass, classic
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .modern: return "Современные"
+        case .glass: return "Стекло"
+        case .classic: return "Классика"
+        }
+    }
+}
+
+enum ChatWallpaper: String, CaseIterable, Codable, Identifiable {
+    case aurora, midnight, ocean, sunset, graphite, blossom, pitch, plain
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .aurora: return "Аврора"
+        case .midnight: return "Полночь"
+        case .ocean: return "Глубина"
+        case .sunset: return "Тепло"
+        case .graphite: return "Графит"
+        case .blossom: return "Сакура"
+        case .pitch: return "Чёрный"
+        case .plain: return "Без градиента"
+        }
+    }
+    var rgb: [UInt32] {
+        switch self {
+        case .aurora: return [0x17274E, 0x321957, 0x113D35]
+        case .midnight: return [0x05070C, 0x0D1422]
+        case .ocean: return [0x102236, 0x145471]
+        case .sunset: return [0x59182D, 0x67321A]
+        case .graphite: return [0x0C0D10, 0x292C34]
+        case .blossom: return [0x281038, 0x581746]
+        case .pitch, .plain: return [0, 0]
+        }
+    }
+}
+
+struct ThemeSelection: Codable, Equatable {
+    var preset: ThemePreset
+    var custom: ThemeProfile?
+
+    var active: ThemeProfile {
+        preset == .custom ? (custom ?? ThemePreset.neonPulse.profile) : preset.profile
+    }
+
+    mutating func select(_ preset: ThemePreset) {
+        if preset == .custom && custom == nil { custom = active }
+        self.preset = preset
+    }
+
+    mutating func copyToCustom() {
+        custom = active
+        preset = .custom
+    }
+
+    mutating func editCustom(_ change: (inout ThemeProfile) -> Void) {
+        guard preset == .custom else { return }
+        var changed = active
+        change(&changed)
+        custom = changed.validated
+    }
+}
+
 enum ThemePreset: String, CaseIterable, Codable, Identifiable {
     case neonPulse, liquidGlass, oled, aurora, cyberpunk, minimal, telegram, custom
 
@@ -101,6 +179,7 @@ struct ThemeProfile: Codable, Equatable {
     var fontScale: Double = 1
     var largeEmoji: Bool = true
     var wallpaperStrength: Double = 1
+    var usesLocalPhoto: Bool?
     var outgoingStart: UInt32?
     var outgoingEnd: UInt32?
 
