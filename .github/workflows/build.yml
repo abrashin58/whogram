@@ -2,7 +2,7 @@ name: Build iOS App
 
 on:
   push:
-    branches: [ "main", "whogram-2-redesign" ]
+    branches: [ "main", "whogram-2-redesign", "whogram-stability-icon" ]
   workflow_dispatch:
     inputs:
       configuration:
@@ -51,6 +51,7 @@ jobs:
           CONFIGURATION_BUILD_DIR="$GITHUB_WORKSPACE/build" 2>&1 | tee build.log
     - name: Package to IPA
       run: |
+        /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName' build/Whogram.app/Info.plist | grep -Fx AppIcon
         mkdir -p Payload
         mv ${{ github.workspace }}/build/Whogram.app Payload/
         zip -r Whogram.ipa Payload
