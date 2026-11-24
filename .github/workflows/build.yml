@@ -17,6 +17,21 @@ permissions:
   contents: read
 
 jobs:
+  tdlib-smoke:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    - name: Exercise real TDLib without credentials or a database
+      shell: bash
+      run: |
+        set -euo pipefail
+        revision="$(awk '$1 == "revision:" {print $2}' project.yml)"
+        [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+        grep -F "revision: \"$revision\"" Tests/TDLibSmoke/Package.swift
+        swift run --package-path Tests/TDLibSmoke WhogramTDLibSmoke
+
   build:
     runs-on: macos-26
     timeout-minutes: 40
